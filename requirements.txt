@@ -1,0 +1,12 @@
+streamlit
+pandas
+openpyxl
+nltk
+networkx
+python-louvain
+wordcloud
+matplotlib
+scikit-learn
+numpy<2.0.0
+Pillow
+textblob
