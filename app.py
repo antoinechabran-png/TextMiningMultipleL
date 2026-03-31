@@ -17,7 +17,7 @@ from textblob import TextBlob
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
-# --- Default Exclusion List (Kept for English) ---
+# --- Default Exclusion List (English base) ---
 DEFAULT_EXCLUSIONS = ["a", "about", "all", "am", "an", "and", "are", "as", "at", "be", "because", "been", "being", "but", "by", "can", "could", "do", "enough", "feel", "for", "from", "have", "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "it", "its", "itself", "just", "less", "let", "like", "little", "lot", "make", "me", "more", "my", "myself", "not", "of", "on", "or", "ought", "our", "ours", "ourselves", "product", "real", "she", "should", "so", "that", "the", "their", "theirs", "them", "themselves", "there", "these", "they", "think", "this", "those", "to", "too", "until", "very", "we", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "would", "you", "your", "yours", "yourself", "yourselves", "smell", "remind", "is", "may", "also", "bit", "go", "put", "out", "into", "quite", "something", "really", "seem", "evoke", "above", "after", "again", "against", "any", "before", "below", "between", "both", "cannot", "did", "does", "doing", "down", "during", "each", "few", "further", "had", "has", "having", "most", "no", "nor", "off", "once", "only", "other", "over", "own", "same", "some", "such", "than", "then", "through", "under", "up", "was", "were", "therefore", "order", "say", "none", "kind", "kinda", "either", "one", "nothing", "almost", "anything", "everything", "find"]
 
 # --- NLP Engine ---
@@ -25,7 +25,7 @@ DEFAULT_EXCLUSIONS = ["a", "about", "all", "am", "an", "and", "are", "as", "at",
 def setup_nltk():
     nltk.download('wordnet', quiet=True)
     nltk.download('omw-1.4', quiet=True)
-    nltk.download('stopwords', quiet=True) # Essential for Multi-lang
+    nltk.download('stopwords', quiet=True)
     return WordNetLemmatizer()
 
 lemmatizer = setup_nltk()
@@ -33,22 +33,19 @@ lemmatizer = setup_nltk()
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
     
-    # 1. Map UI names to NLTK language names
     lang_map = {
         "English": "english", "French": "french", "Spanish": "spanish", 
         "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
     }
     
-    # 2. Load Language Specific Stopwords
     try:
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
 
-    # 3. Enhanced Regex to support Accents (à-ÿ)
+    # Regex actualisée pour supporter les accents européens [a-zà-ÿ]
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
     
-    # 4. Filter against both NLTK and your Custom list
     cleaned = [lemmatizer.lemmatize(w) for w in words 
                if w not in base_stops and w not in custom_stops and len(w) > 2]
     return " ".join(cleaned)
@@ -66,7 +63,6 @@ def run_fca(df, p_col, fmin, use_tfidf):
     grouped = df.groupby(p_col)['cleaned'].apply(lambda x: " ".join(x))
     if len(grouped) < 3: return None, "Need 3+ products for Factorial Mapping."
     VecClass = TfidfVectorizer if use_tfidf else CountVectorizer
-    # Stopwords are now handled in the cleaning phase, so we pass None here
     vec = VecClass(min_df=fmin) 
     X = vec.fit_transform(grouped).toarray()
     words, products = vec.get_feature_names_out(), grouped.index.tolist()
@@ -109,15 +105,13 @@ with st.sidebar:
     st.header("⚙️ Global Settings")
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
-    # --- Language Selector ---
-    st.subheader("🌍 Multi-Language")
-    dataset_lang = st.selectbox("Analyze in:", 
+    st.subheader("🌍 Language Settings")
+    dataset_lang = st.selectbox("Dataset Language:", 
                                 ["English", "French", "Spanish", "Portuguese", "Italian", "Indonesian"])
     
     use_tfidf = st.toggle("Use TF-IDF Weighting", value=True)
-    fmin_global = st.slider("Min Word Frequency (Global)", 1, 50, 5)
+    fmin_global = st.slider("Min Word Frequency", 1, 50, 5)
     st.divider()
-    font_style = st.selectbox("Font Style", ["Serif", "Sans-Serif", "Monospace", "Fantasy"])
     shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
     palette_opt = st.selectbox("Color Palette", ["copper", "GnBu", "RdPu", "viridis", "magma"])
 
@@ -129,19 +123,22 @@ if uploaded_file:
     v_col = st.sidebar.selectbox("Verbatim Column", df.columns)
 
     if st.sidebar.button("🚀 Run Full Analysis"):
-        # We pass the dataset_lang to the cleaner here
+        # Nettoyage des lignes vides avant analyse
+        df = df.dropna(subset=[v_col])
         df['cleaned'] = df[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang))
         st.session_state['processed_df'] = df
 
     if 'processed_df' in st.session_state:
         df = st.session_state['processed_df']
-        p_list = sorted(df[p_col].unique())
+        # CORRECTION TYPEERROR: Conversion en string pour éviter l'erreur de tri mixte
+        p_list = sorted(df[p_col].astype(str).unique())
 
         with tab1:
             target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
-            p_sub = df[df[p_col]==target]['cleaned']
+            p_sub = df[df[p_col].astype(str) == target]['cleaned']
             
-            sent_val = df[df[p_col]==target][v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
+            # Sentiment simple (TextBlob est optimisé pour l'Anglais, indicatif pour les autres)
+            sent_val = df[df[p_col].astype(str) == target][v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric("Overall Fragrance Mood", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
             st.progress((sent_val + 1) / 2)
             st.divider()
@@ -169,36 +166,24 @@ if uploaded_file:
                     for w, s in neg_words: st.write(f"- {w}")
                 else: st.write("None detected.")
 
-            st.divider()
-            st.write("📜 **Detailed Phrase extractions (N-Grams)**")
-            vec2 = CountVectorizer(ngram_range=(2,3))
-            try:
-                mtx_n = vec2.fit_transform(p_sub)
-                ng_counts = zip(vec2.get_feature_names_out(), mtx_n.toarray().sum(axis=0))
-                for p, c in sorted(ng_counts, key=lambda x: x[1], reverse=True)[:10]:
-                    st.caption(f"{c}x | {p}")
-            except: st.write("Not enough data for phrases.")
-
         with tab2:
             st.subheader("⚔️ Scent Comparison")
             comp_cols = st.columns(2)
             prod_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
             prod_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
             
-            data_a = df[df[p_col]==prod_a]['cleaned']
-            data_b = df[df[p_col]==prod_b]['cleaned']
+            data_a = df[df[p_col].astype(str) == prod_a]['cleaned']
+            data_b = df[df[p_col].astype(str) == prod_b]['cleaned']
             
             if not data_a.empty and not data_b.empty:
                 v_comp = TfidfVectorizer().fit_transform([" ".join(data_a), " ".join(data_b)])
                 sim_score = float(cosine_similarity(v_comp[0], v_comp[1])[0][0])
-                
                 mid_col = st.columns([1,2,1])[1]
                 mid_col.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
                 mid_col.progress(sim_score)
                 st.divider()
-            
-            comp_cols[0].pyplot(generate_word_cloud(data_a, palette_opt, shape_opt))
-            comp_cols[1].pyplot(generate_word_cloud(data_b, palette_opt, shape_opt))
+                comp_cols[0].pyplot(generate_word_cloud(data_a, palette_opt, shape_opt))
+                comp_cols[1].pyplot(generate_word_cloud(data_b, palette_opt, shape_opt))
 
         with tab3:
             st.subheader("🌐 Factorial Correspondence Analysis")
@@ -206,24 +191,22 @@ if uploaded_file:
             if not err:
                 r_c, c_c, prods, wrds, var = res
                 fig, ax = plt.subplots(figsize=(12, 8))
-                ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=150, alpha=0.7, label="Products")
+                ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=150, alpha=0.7)
                 for i, txt in enumerate(prods): 
                     ax.text(r_c[i,0]+0.02, r_c[i,1]+0.02, txt, fontweight='bold', color='darkblue')
-                ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.3, label="Descriptors")
+                ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.3)
                 for i, txt in enumerate(wrds):
                     dist = np.linalg.norm(c_c[i])
                     if dist > np.percentile([np.linalg.norm(c) for c in c_c], 70):
-                        ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=9, alpha=0.8)
+                        ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=9)
                 ax.axhline(0, color='black', lw=0.5, ls='--')
                 ax.axvline(0, color='black', lw=0.5, ls='--')
-                ax.set_xlabel(f"Dim 1 ({round(var[0]*100,1)}%)")
-                ax.set_ylabel(f"Dim 2 ({round(var[1]*100,1)}%)")
                 st.pyplot(fig)
             else: st.error(err)
 
         with tab4:
             st.subheader("🔍 Topic Lab")
-            num_t = st.slider("Number of Themes", 2, 8, 4, key="nmf_slider")
+            num_t = st.slider("Number of Themes", 2, 8, 4)
             if st.button("Generate Topic Models"):
                 vec_t = TfidfVectorizer(max_features=1000)
                 mtx_t = vec_t.fit_transform(df['cleaned'])
@@ -239,7 +222,7 @@ if uploaded_file:
 
 with tab5:
     st.subheader("🚫 Exclusions")
-    txt = st.text_area("Stopwords", value=", ".join(st.session_state.custom_stop_list), height=300)
+    txt = st.text_area("Stopwords (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
     if st.button("Update Exclusions"):
         st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
         st.rerun()
