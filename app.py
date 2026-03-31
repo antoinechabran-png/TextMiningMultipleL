@@ -17,7 +17,21 @@ from textblob import TextBlob
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
-# --- Default Exclusion List (English base) ---
+# --- Font Injection ---
+def apply_custom_font(font_name):
+    # Mapping fonts to generic fallbacks if specific imports aren't available
+    font_css = f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@400;700&display=swap');
+    
+    html, body, [class*="css"], .stText, .stMarkdown {{
+        font-family: '{font_name}', sans-serif;
+    }}
+    </style>
+    """
+    st.markdown(font_css, unsafe_allow_html=True)
+
+# --- Default Exclusion List ---
 DEFAULT_EXCLUSIONS = ["a", "about", "all", "am", "an", "and", "are", "as", "at", "be", "because", "been", "being", "but", "by", "can", "could", "do", "enough", "feel", "for", "from", "have", "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "it", "its", "itself", "just", "less", "let", "like", "little", "lot", "make", "me", "more", "my", "myself", "not", "of", "on", "or", "ought", "our", "ours", "ourselves", "product", "real", "she", "should", "so", "that", "the", "their", "theirs", "them", "themselves", "there", "these", "they", "think", "this", "those", "to", "too", "until", "very", "we", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "would", "you", "your", "yours", "yourself", "yourselves", "smell", "remind", "is", "may", "also", "bit", "go", "put", "out", "into", "quite", "something", "really", "seem", "evoke", "above", "after", "again", "against", "any", "before", "below", "between", "both", "cannot", "did", "does", "doing", "down", "during", "each", "few", "further", "had", "has", "having", "most", "no", "nor", "off", "once", "only", "other", "over", "own", "same", "some", "such", "than", "then", "through", "under", "up", "was", "were", "therefore", "order", "say", "none", "kind", "kinda", "either", "one", "nothing", "almost", "anything", "everything", "find"]
 
 # --- NLP Engine ---
@@ -32,22 +46,13 @@ lemmatizer = setup_nltk()
 
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
-    
-    lang_map = {
-        "English": "english", "French": "french", "Spanish": "spanish", 
-        "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
-    }
-    
+    lang_map = {"English": "english", "French": "french", "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"}
     try:
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
-
-    # Regex actualisée pour supporter les accents européens [a-zà-ÿ]
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
-    
-    cleaned = [lemmatizer.lemmatize(w) for w in words 
-               if w not in base_stops and w not in custom_stops and len(w) > 2]
+    cleaned = [lemmatizer.lemmatize(w) for w in words if w not in base_stops and w not in custom_stops and len(w) > 2]
     return " ".join(cleaned)
 
 # --- Analysis Functions ---
@@ -106,9 +111,12 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
     st.subheader("🌍 Language Settings")
-    dataset_lang = st.selectbox("Dataset Language:", 
-                                ["English", "French", "Spanish", "Portuguese", "Italian", "Indonesian"])
+    dataset_lang = st.selectbox("Dataset Language:", ["English", "French", "Spanish", "Portuguese", "Italian", "Indonesian"])
     
+    st.subheader("🎨 Brand Styling")
+    selected_font = st.selectbox("App Font:", ["Inter", "Helvetica Neue", "Playfair Display", "Canela", "Clash Display", "Satoshi"])
+    apply_custom_font(selected_font)
+
     use_tfidf = st.toggle("Use TF-IDF Weighting", value=True)
     fmin_global = st.slider("Min Word Frequency", 1, 50, 5)
     st.divider()
@@ -123,21 +131,18 @@ if uploaded_file:
     v_col = st.sidebar.selectbox("Verbatim Column", df.columns)
 
     if st.sidebar.button("🚀 Run Full Analysis"):
-        # Nettoyage des lignes vides avant analyse
         df = df.dropna(subset=[v_col])
         df['cleaned'] = df[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang))
         st.session_state['processed_df'] = df
 
     if 'processed_df' in st.session_state:
         df = st.session_state['processed_df']
-        # CORRECTION TYPEERROR: Conversion en string pour éviter l'erreur de tri mixte
         p_list = sorted(df[p_col].astype(str).unique())
 
         with tab1:
             target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
             p_sub = df[df[p_col].astype(str) == target]['cleaned']
             
-            # Sentiment simple (TextBlob est optimisé pour l'Anglais, indicatif pour les autres)
             sent_val = df[df[p_col].astype(str) == target][v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric("Overall Fragrance Mood", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
             st.progress((sent_val + 1) / 2)
