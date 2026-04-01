@@ -24,7 +24,7 @@ MULTILINGUAL_STOPWORDS = {
     "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
     "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
     "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
-    "Portuguese": ["produto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Portuguese": ["producto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
     "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
     "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
 }
@@ -146,7 +146,6 @@ if uploaded_file:
         df = st.session_state['processed_df']
         p_list = sorted(df[p_col].astype(str).unique())
 
-        # ... [Previous Tabs 1-4 remain exactly the same] ...
         with tab1:
             target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
             p_sub = df[df[p_col].astype(str) == target]['cleaned']
@@ -199,55 +198,79 @@ if uploaded_file:
                 for i, topic in enumerate(nmf.components_):
                     st.info(f"Theme {i+1}: " + ", ".join([feature_names[j] for j in topic.argsort()[-10:]]))
 
-        # --- New Tab 5: Driver Map (CCA) ---
+        # --- IMPROVED Tab 5: Driver Map (CCA / Symmetric Biplot) ---
         with tab_cca:
-            st.subheader("📈 Driver Analysis: What pulls Liking?")
-            st.caption("The Red Arrow points toward 'Higher Liking'. Words near the arrow tip are your positive drivers.")
+            st.subheader("📈 Driver Analysis: Why do they like it?")
             
             # Aggregate data per product for the map
-            prod_data = df.groupby(p_col).agg({'cleaned': lambda x: " ".join(x), s_col: 'mean'})
+            prod_summary = df.groupby(p_col).agg({'cleaned': lambda x: " ".join(x), s_col: 'mean'}).reset_index()
             
-            if len(prod_data) >= 3:
-                vec_cca = TfidfVectorizer(min_df=fmin_global)
-                X_cca = vec_cca.fit_transform(prod_data['cleaned']).toarray()
-                words_cca = vec_cca.get_feature_names_out()
+            if len(prod_summary) >= 3:
+                # 1. Vectorize with TF-IDF
+                vec = TfidfVectorizer(min_df=fmin_global)
+                X = vec.fit_transform(prod_summary['cleaned']).toarray()
+                words = vec.get_feature_names_out()
                 
-                # SVD for dimensionality reduction
-                svd_cca = TruncatedSVD(n_components=2)
-                X_reduced = svd_cca.fit_transform(X_cca)
+                # 2. Symmetric Scaling for Biplot (Standardization is key)
+                X_std = StandardScaler().fit_transform(X)
+                svd = TruncatedSVD(n_components=2, random_state=42)
                 
-                # Standardize scores for the vector
-                scores = prod_data[s_col].values.reshape(-1, 1)
-                scores_std = StandardScaler().fit_transform(scores)
+                # Project Products and Words into same scale
+                prod_coords = svd.fit_transform(X_std)
+                word_coords = svd.components_.T * np.sqrt(svd.explained_variance_ratio_)
                 
-                # Calculate the Liking Vector direction in the 2D space
-                # We correlate the liking score with the two SVD dimensions
-                vec_x = np.corrcoef(X_reduced[:,0], scores_std.flatten())[0, 1]
-                vec_y = np.corrcoef(X_reduced[:,1], scores_std.flatten())[0, 1]
+                # 3. Calculate Driver Vector (Correlation with Score)
+                scores_std = StandardScaler().fit_transform(prod_summary[[s_col]])
+                vx = np.corrcoef(prod_coords[:, 0], scores_std.flatten())[0, 1]
+                vy = np.corrcoef(prod_coords[:, 1], scores_std.flatten())[0, 1]
                 
-                fig_cca, ax_cca = plt.subplots(figsize=(12, 8))
+                # 4. Plotting
+                fig, ax = plt.subplots(figsize=(12, 10))
+                ax.axhline(0, color='gray', alpha=0.2); ax.axvline(0, color='gray', alpha=0.2)
                 
-                # Plot Products
-                ax_cca.scatter(X_reduced[:,0], X_reduced[:,1], c='blue', s=100, alpha=0.5)
-                for i, txt in enumerate(prod_data.index):
-                    ax_cca.text(X_reduced[i,0], X_reduced[i,1], txt, color='blue', fontsize=10, fontweight='bold')
+                # Plot Products (Blue)
+                ax.scatter(prod_coords[:,0], prod_coords[:,1], c='blue', s=150, alpha=0.6, label='Products')
+                for i, txt in enumerate(prod_summary[p_col]):
+                    ax.text(prod_coords[i,0]+0.05, prod_coords[i,1]+0.05, txt, fontweight='bold', color='darkblue')
                 
-                # Plot Words (showing top 40 most frequent)
-                word_weights = svd_cca.components_.T
-                for i, txt in enumerate(words_cca):
-                    if i % (max(1, len(words_cca)//40)) == 0:
-                        ax_cca.text(word_weights[i,0]*2, word_weights[i,1]*2, txt, color='red', alpha=0.4, fontsize=8)
+                # Plot Words (Filtered for impact)
+                # We show words that are most descriptive (highest variance)
+                impact = np.linalg.norm(word_coords, axis=1)
+                top_idx = impact.argsort()[-40:] 
                 
-                # Plot Liking Vector (The Driver Arrow)
-                # Scale arrow for visibility
-                scale = np.max(np.abs(X_reduced)) * 0.8
-                ax_cca.arrow(0, 0, vec_x*scale, vec_y*scale, color='green', width=0.05, head_width=0.15, label='Liking Direction')
-                ax_cca.text(vec_x*scale*1.1, vec_y*scale*1.1, "Liking Score", color='green', fontweight='bold', fontsize=12)
+                for i in top_idx:
+                    ax.text(word_coords[i,0]*5, word_coords[i,1]*5, words[i], color='red', alpha=0.5, fontsize=9)
                 
-                plt.axhline(0, color='grey', lw=0.5); plt.axvline(0, color='grey', lw=0.5)
-                st.pyplot(fig_cca)
+                # Plot the "Liking" Arrow
+                arrow_len = np.max(np.abs(prod_coords)) * 0.8
+                ax.arrow(0, 0, vx*arrow_len, vy*arrow_len, color='green', width=0.03, head_width=0.1)
+                ax.text(vx*arrow_len*1.2, vy*arrow_len*1.2, "HIGHER LIKING", color='green', fontweight='bold')
+                
+                st.pyplot(fig)
+                
+                # 5. Semantic Correlation Table (The "Truth" Table)
+                st.divider()
+                st.write("### 💎 Statistical Scent Drivers")
+                
+                # Calculate direct correlation between word presence and score
+                word_presence = (X > 0).astype(int)
+                corrs = []
+                for i, word in enumerate(words):
+                    c = np.corrcoef(word_presence[:, i], prod_summary[s_col])[0, 1]
+                    corrs.append((word, c))
+                
+                corrs_df = pd.DataFrame(corrs, columns=['Word', 'Impact']).sort_values(by='Impact', ascending=False).dropna()
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.success("**Top Positive Drivers** (Mentioned when scores are high)")
+                    st.dataframe(corrs_df.head(10), use_container_width=True)
+                with c2:
+                    st.error("**Top Negative Drivers** (Mentioned when scores are low)")
+                    st.dataframe(corrs_df.tail(10).sort_values(by="Impact"), use_container_width=True)
+
             else:
-                st.warning("Need at least 3 products in the dataset to calculate correlations.")
+                st.warning("Need at least 3 products for meaningful driver mapping.")
 
 with tab5:
     st.subheader("🚫 Exclusions")
