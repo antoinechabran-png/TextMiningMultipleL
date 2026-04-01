@@ -17,22 +17,29 @@ from textblob import TextBlob
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
+# --- New: Multilingual Exclusion Dictionary ---
+# These are the "contextual noise" words that change per language
+MULTILINGUAL_STOPWORDS = {
+    "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "really", "seem", "evoke", "find", "remind"],
+    "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
+    "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
+    "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
+    "Portuguese": ["produto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
+    "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
+}
+
 # --- Font Injection ---
 def apply_custom_font(font_name):
-    # Mapping fonts to generic fallbacks if specific imports aren't available
     font_css = f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@400;700&display=swap');
-    
     html, body, [class*="css"], .stText, .stMarkdown {{
         font-family: '{font_name}', sans-serif;
     }}
     </style>
     """
     st.markdown(font_css, unsafe_allow_html=True)
-
-# --- Default Exclusion List ---
-DEFAULT_EXCLUSIONS = ["a", "about", "all", "am", "an", "and", "are", "as", "at", "be", "because", "been", "being", "but", "by", "can", "could", "do", "enough", "feel", "for", "from", "have", "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "it", "its", "itself", "just", "less", "let", "like", "little", "lot", "make", "me", "more", "my", "myself", "not", "of", "on", "or", "ought", "our", "ours", "ourselves", "product", "real", "she", "should", "so", "that", "the", "their", "theirs", "them", "themselves", "there", "these", "they", "think", "this", "those", "to", "too", "until", "very", "we", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "would", "you", "your", "yours", "yourself", "yourselves", "smell", "remind", "is", "may", "also", "bit", "go", "put", "out", "into", "quite", "something", "really", "seem", "evoke", "above", "after", "again", "against", "any", "before", "below", "between", "both", "cannot", "did", "does", "doing", "down", "during", "each", "few", "further", "had", "has", "having", "most", "no", "nor", "off", "once", "only", "other", "over", "own", "same", "some", "such", "than", "then", "through", "under", "up", "was", "were", "therefore", "order", "say", "none", "kind", "kinda", "either", "one", "nothing", "almost", "anything", "everything", "find"]
 
 # --- NLP Engine ---
 @st.cache_resource
@@ -46,16 +53,25 @@ lemmatizer = setup_nltk()
 
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
-    lang_map = {"English": "english", "French": "french", "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"}
+    # Updated lang_map to include German
+    lang_map = {
+        "English": "english", "French": "french", "German": "german",
+        "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
+    }
     try:
+        # This layer removes grammar words (le, la, the, der, etc.)
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
+    
+    # regex matches words with accents for EU languages
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
-    cleaned = [lemmatizer.lemmatize(w) for w in words if w not in base_stops and w not in custom_stops and len(w) > 2]
+    
+    cleaned = [lemmatizer.lemmatize(w) for w in words 
+               if w not in base_stops and w not in custom_stops and len(w) > 2]
     return " ".join(cleaned)
 
-# --- Analysis Functions ---
+# --- Analysis Functions (Word Cloud, Tree, FCA, Sentiment) ---
 def get_sentiment_words(text_series):
     words = " ".join(text_series).split()
     unique_words = list(set(words))
@@ -103,16 +119,19 @@ def generate_word_tree(text_series, min_freq, palette):
     except: return None
 
 # --- UI Setup ---
-if 'custom_stop_list' not in st.session_state:
-    st.session_state.custom_stop_list = DEFAULT_EXCLUSIONS.copy()
-
 with st.sidebar:
     st.header("⚙️ Global Settings")
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
-    st.subheader("🌍 Language Settings")
-    dataset_lang = st.selectbox("Dataset Language:", ["English", "French", "Spanish", "Portuguese", "Italian", "Indonesian"])
+    st.subheader("🌍 Language & Logic")
+    # Updated to include German
+    dataset_lang = st.selectbox("Dataset Language:", list(MULTILINGUAL_STOPWORDS.keys()))
     
+    # Auto-switch exclusion list when language changes
+    if 'current_lang' not in st.session_state or st.session_state.current_lang != dataset_lang:
+        st.session_state.current_lang = dataset_lang
+        st.session_state.custom_stop_list = MULTILINGUAL_STOPWORDS[dataset_lang]
+
     st.subheader("🎨 Brand Styling")
     selected_font = st.selectbox("App Font:", ["Inter", "Helvetica Neue", "Playfair Display", "Canela", "Clash Display", "Satoshi"])
     apply_custom_font(selected_font)
@@ -227,7 +246,8 @@ if uploaded_file:
 
 with tab5:
     st.subheader("🚫 Exclusions")
-    txt = st.text_area("Stopwords (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
+    st.info(f"Language context: **{st.session_state.get('current_lang', 'Not Set')}**")
+    txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
     if st.button("Update Exclusions"):
         st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
         st.rerun()
