@@ -23,7 +23,7 @@ MULTILINGUAL_STOPWORDS = {
     "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
     "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
     "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
-    "Portuguese": ["produto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Portuguese": ["producto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
     "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
     "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
 }
@@ -61,10 +61,8 @@ def clean_text(text, custom_stops, lang_choice):
     except:
         base_stops = set()
 
-    # Clean custom stops list
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
 
-    # Manual Fragrance Lemmatization (Merging common sensory variations)
     fragrance_merges = {
         "freshness": "fresh",
         "freshly": "fresh",
@@ -81,11 +79,8 @@ def clean_text(text, custom_stops, lang_choice):
     
     cleaned = []
     for w in words:
-        # 1. Apply Lemmatizer
         lemma = lemmatizer.lemmatize(w)
-        # 2. Apply Manual Merges (Freshness -> Fresh)
         lemma = fragrance_merges.get(lemma, lemma)
-        # 3. Filter against exclusions
         if (lemma not in base_stops and 
             lemma not in custom_stops_set and 
             len(lemma) > 2):
@@ -208,7 +203,6 @@ if uploaded_file:
 
         with tab2:
             st.subheader("⚔️ Scent Comparison")
-            # Explanation of the score
             st.info("**Olfactive Similarity Score:** This measures how closely the consumer descriptions of two fragrances align. It uses **Cosine Similarity** to compare descriptive keywords. 100% means consumers used identical vocabulary; a lower score suggests distinct sensory experiences.")
             
             comp_cols = st.columns(2)
@@ -248,13 +242,22 @@ if uploaded_file:
             if st.button("Generate Topic Models"):
                 vec_t = TfidfVectorizer(max_features=1000)
                 mtx_t = vec_t.fit_transform(df['cleaned'])
-                nmf = NMF(n_components=num_t, random_state=42).fit(mtx_t)
+                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx_t)
                 feature_names = vec_t.get_feature_names_out()
+                
+                # Document-topic matrix to find the most relevant product
+                doc_topic = nmf.transform(mtx_t)
+                
                 t_cols = st.columns(min(num_t, 3))
                 for i, topic in enumerate(nmf.components_):
                     with t_cols[i % 3]:
                         top_words = [feature_names[j] for j in topic.argsort()[-10:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        
+                        # Identify the product index that has the highest score for this topic
+                        lead_idx = doc_topic[:, i].argmax()
+                        lead_prod = df.iloc[lead_idx][p_col]
+                        st.caption(f"📍 **Lead Product:** {lead_prod}")
 
 with tab5:
     st.subheader("🚫 Exclusions")
