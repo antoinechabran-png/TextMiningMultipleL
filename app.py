@@ -17,10 +17,9 @@ from textblob import TextBlob
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
-# --- New: Multilingual Exclusion Dictionary ---
-# These are the "contextual noise" words that change per language
+# --- Multilingual Exclusion Dictionary ---
 MULTILINGUAL_STOPWORDS = {
-    "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "really", "seem", "evoke", "find", "remind"],
+    "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "seem", "evoke", "find", "remind"],
     "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
     "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
     "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
@@ -34,9 +33,7 @@ def apply_custom_font(font_name):
     font_css = f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@400;700&display=swap');
-    html, body, [class*="css"], .stText, .stMarkdown {{
-        font-family: '{font_name}', sans-serif;
-    }}
+    html, body, [class*="css"], .stText, .stMarkdown {{ font-family: '{font_name}', sans-serif; }}
     </style>
     """
     st.markdown(font_css, unsafe_allow_html=True)
@@ -53,25 +50,50 @@ lemmatizer = setup_nltk()
 
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
-    # Updated lang_map to include German
+    
     lang_map = {
         "English": "english", "French": "french", "German": "german",
         "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
     }
+    
     try:
-        # This layer removes grammar words (le, la, the, der, etc.)
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
-    
-    # regex matches words with accents for EU languages
+
+    # Clean custom stops list
+    custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
+
+    # Manual Fragrance Lemmatization (Merging common sensory variations)
+    fragrance_merges = {
+        "freshness": "fresh",
+        "freshly": "fresh",
+        "fruity": "fruit",
+        "smelling": "smell",
+        "scented": "scent",
+        "floral": "flower",
+        "flowers": "flower",
+        "cleanliness": "clean",
+        "cleaning": "clean"
+    }
+
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
     
-    cleaned = [lemmatizer.lemmatize(w) for w in words 
-               if w not in base_stops and w not in custom_stops and len(w) > 2]
+    cleaned = []
+    for w in words:
+        # 1. Apply Lemmatizer
+        lemma = lemmatizer.lemmatize(w)
+        # 2. Apply Manual Merges (Freshness -> Fresh)
+        lemma = fragrance_merges.get(lemma, lemma)
+        # 3. Filter against exclusions
+        if (lemma not in base_stops and 
+            lemma not in custom_stops_set and 
+            len(lemma) > 2):
+            cleaned.append(lemma)
+            
     return " ".join(cleaned)
 
-# --- Analysis Functions (Word Cloud, Tree, FCA, Sentiment) ---
+# --- Analysis Functions ---
 def get_sentiment_words(text_series):
     words = " ".join(text_series).split()
     unique_words = list(set(words))
@@ -124,23 +146,21 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
     st.subheader("🌍 Language & Logic")
-    # Updated to include German
     dataset_lang = st.selectbox("Dataset Language:", list(MULTILINGUAL_STOPWORDS.keys()))
     
-    # Auto-switch exclusion list when language changes
     if 'current_lang' not in st.session_state or st.session_state.current_lang != dataset_lang:
         st.session_state.current_lang = dataset_lang
         st.session_state.custom_stop_list = MULTILINGUAL_STOPWORDS[dataset_lang]
 
     st.subheader("🎨 Brand Styling")
-    selected_font = st.selectbox("App Font:", ["Inter", "Helvetica Neue", "Playfair Display", "Canela", "Clash Display", "Satoshi"])
+    selected_font = st.selectbox("App Font:", ["Inter", "Helvetica Neue", "Playfair Display", "Clash Display"])
     apply_custom_font(selected_font)
 
     use_tfidf = st.toggle("Use TF-IDF Weighting", value=True)
     fmin_global = st.slider("Min Word Frequency", 1, 50, 5)
     st.divider()
     shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
-    palette_opt = st.selectbox("Color Palette", ["copper", "GnBu", "RdPu", "viridis", "magma"])
+    palette_opt = st.selectbox("Color Palette", ["copper", "GnBu", "RdPu", "viridis"])
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🚫 Exclusions"])
 
@@ -156,7 +176,7 @@ if uploaded_file:
 
     if 'processed_df' in st.session_state:
         df = st.session_state['processed_df']
-        p_list = sorted(df[p_col].astype(str).unique())
+        p_list = sorted(df[p_col].dropna().astype(str).unique())
 
         with tab1:
             target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
@@ -181,17 +201,16 @@ if uploaded_file:
             l_col, r_col = st.columns(2)
             with l_col:
                 st.success("✨ **Top Positive Descriptors**")
-                if pos_words:
-                    for w, s in pos_words: st.write(f"- {w}")
-                else: st.write("None detected.")
+                for w, s in pos_words: st.write(f"- {w}")
             with r_col:
                 st.error("⚠️ **Top Negative Descriptors**")
-                if neg_words:
-                    for w, s in neg_words: st.write(f"- {w}")
-                else: st.write("None detected.")
+                for w, s in neg_words: st.write(f"- {w}")
 
         with tab2:
             st.subheader("⚔️ Scent Comparison")
+            # Explanation of the score
+            st.info("**Olfactive Similarity Score:** This measures how closely the consumer descriptions of two fragrances align. It uses **Cosine Similarity** to compare descriptive keywords. 100% means consumers used identical vocabulary; a lower score suggests distinct sensory experiences.")
+            
             comp_cols = st.columns(2)
             prod_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
             prod_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
@@ -202,9 +221,8 @@ if uploaded_file:
             if not data_a.empty and not data_b.empty:
                 v_comp = TfidfVectorizer().fit_transform([" ".join(data_a), " ".join(data_b)])
                 sim_score = float(cosine_similarity(v_comp[0], v_comp[1])[0][0])
-                mid_col = st.columns([1,2,1])[1]
-                mid_col.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
-                mid_col.progress(sim_score)
+                st.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
+                st.progress(sim_score)
                 st.divider()
                 comp_cols[0].pyplot(generate_word_cloud(data_a, palette_opt, shape_opt))
                 comp_cols[1].pyplot(generate_word_cloud(data_b, palette_opt, shape_opt))
@@ -216,15 +234,11 @@ if uploaded_file:
                 r_c, c_c, prods, wrds, var = res
                 fig, ax = plt.subplots(figsize=(12, 8))
                 ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=150, alpha=0.7)
-                for i, txt in enumerate(prods): 
-                    ax.text(r_c[i,0]+0.02, r_c[i,1]+0.02, txt, fontweight='bold', color='darkblue')
+                for i, txt in enumerate(prods): ax.text(r_c[i,0]+0.02, r_c[i,1]+0.02, txt, fontweight='bold')
                 ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.3)
                 for i, txt in enumerate(wrds):
-                    dist = np.linalg.norm(c_c[i])
-                    if dist > np.percentile([np.linalg.norm(c) for c in c_c], 70):
+                    if np.linalg.norm(c_c[i]) > np.percentile([np.linalg.norm(c) for c in c_c], 70):
                         ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=9)
-                ax.axhline(0, color='black', lw=0.5, ls='--')
-                ax.axvline(0, color='black', lw=0.5, ls='--')
                 st.pyplot(fig)
             else: st.error(err)
 
@@ -234,19 +248,16 @@ if uploaded_file:
             if st.button("Generate Topic Models"):
                 vec_t = TfidfVectorizer(max_features=1000)
                 mtx_t = vec_t.fit_transform(df['cleaned'])
-                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx_t)
+                nmf = NMF(n_components=num_t, random_state=42).fit(mtx_t)
                 feature_names = vec_t.get_feature_names_out()
                 t_cols = st.columns(min(num_t, 3))
                 for i, topic in enumerate(nmf.components_):
                     with t_cols[i % 3]:
                         top_words = [feature_names[j] for j in topic.argsort()[-10:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
-                        relevance = mtx_t.dot(topic)
-                        st.caption(f"Lead Product: {df.iloc[relevance.argmax()][p_col]}")
 
 with tab5:
     st.subheader("🚫 Exclusions")
-    st.info(f"Language context: **{st.session_state.get('current_lang', 'Not Set')}**")
     txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
     if st.button("Update Exclusions"):
         st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
