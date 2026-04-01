@@ -13,18 +13,18 @@ import re
 import numpy as np
 from PIL import Image, ImageDraw
 from textblob import TextBlob
-from sklearn.preprocessing import StandardScaler
 
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
-# --- Multilingual Exclusion Dictionary ---
+# --- New: Multilingual Exclusion Dictionary ---
+# These are the "contextual noise" words that change per language
 MULTILINGUAL_STOPWORDS = {
     "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "really", "seem", "evoke", "find", "remind"],
     "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
     "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
     "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
-    "Portuguese": ["producto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Portuguese": ["produto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
     "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
     "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
 }
@@ -34,7 +34,9 @@ def apply_custom_font(font_name):
     font_css = f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@400;700&display=swap');
-    html, body, [class*="css"], .stText, .stMarkdown {{ font-family: '{font_name}', sans-serif; }}
+    html, body, [class*="css"], .stText, .stMarkdown {{
+        font-family: '{font_name}', sans-serif;
+    }}
     </style>
     """
     st.markdown(font_css, unsafe_allow_html=True)
@@ -51,16 +53,25 @@ lemmatizer = setup_nltk()
 
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
-    lang_map = {"English": "english", "French": "french", "German": "german", "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"}
+    # Updated lang_map to include German
+    lang_map = {
+        "English": "english", "French": "french", "German": "german",
+        "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
+    }
     try:
+        # This layer removes grammar words (le, la, the, der, etc.)
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
+    
+    # regex matches words with accents for EU languages
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
-    cleaned = [lemmatizer.lemmatize(w) for w in words if w not in base_stops and w not in custom_stops and len(w) > 2]
+    
+    cleaned = [lemmatizer.lemmatize(w) for w in words 
+               if w not in base_stops and w not in custom_stops and len(w) > 2]
     return " ".join(cleaned)
 
-# --- Analysis Functions ---
+# --- Analysis Functions (Word Cloud, Tree, FCA, Sentiment) ---
 def get_sentiment_words(text_series):
     words = " ".join(text_series).split()
     unique_words = list(set(words))
@@ -113,8 +124,10 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
     st.subheader("🌍 Language & Logic")
+    # Updated to include German
     dataset_lang = st.selectbox("Dataset Language:", list(MULTILINGUAL_STOPWORDS.keys()))
     
+    # Auto-switch exclusion list when language changes
     if 'current_lang' not in st.session_state or st.session_state.current_lang != dataset_lang:
         st.session_state.current_lang = dataset_lang
         st.session_state.custom_stop_list = MULTILINGUAL_STOPWORDS[dataset_lang]
@@ -129,16 +142,15 @@ with st.sidebar:
     shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
     palette_opt = st.selectbox("Color Palette", ["copper", "GnBu", "RdPu", "viridis", "magma"])
 
-tab1, tab2, tab3, tab4, tab_cca, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "📈 Driver Map (CCA)", "🚫 Exclusions"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🚫 Exclusions"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
     p_col = st.sidebar.selectbox("Product ID Column", df.columns)
     v_col = st.sidebar.selectbox("Verbatim Column", df.columns)
-    s_col = st.sidebar.selectbox("Liking Score Column (Numeric)", df.columns)
 
     if st.sidebar.button("🚀 Run Full Analysis"):
-        df = df.dropna(subset=[v_col, s_col])
+        df = df.dropna(subset=[v_col])
         df['cleaned'] = df[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang))
         st.session_state['processed_df'] = df
 
@@ -149,10 +161,12 @@ if uploaded_file:
         with tab1:
             target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
             p_sub = df[df[p_col].astype(str) == target]['cleaned']
+            
             sent_val = df[df[p_col].astype(str) == target][v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric("Overall Fragrance Mood", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
             st.progress((sent_val + 1) / 2)
             st.divider()
+
             c1, c2 = st.columns(2)
             with c1: 
                 st.write("**Word Cloud**")
@@ -162,17 +176,36 @@ if uploaded_file:
                 tree_fig = generate_word_tree(p_sub, fmin_global, palette_opt)
                 if tree_fig: st.pyplot(tree_fig)
 
+            st.divider()
+            pos_words, neg_words = get_sentiment_words(p_sub)
+            l_col, r_col = st.columns(2)
+            with l_col:
+                st.success("✨ **Top Positive Descriptors**")
+                if pos_words:
+                    for w, s in pos_words: st.write(f"- {w}")
+                else: st.write("None detected.")
+            with r_col:
+                st.error("⚠️ **Top Negative Descriptors**")
+                if neg_words:
+                    for w, s in neg_words: st.write(f"- {w}")
+                else: st.write("None detected.")
+
         with tab2:
             st.subheader("⚔️ Scent Comparison")
             comp_cols = st.columns(2)
             prod_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
             prod_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
+            
             data_a = df[df[p_col].astype(str) == prod_a]['cleaned']
             data_b = df[df[p_col].astype(str) == prod_b]['cleaned']
+            
             if not data_a.empty and not data_b.empty:
                 v_comp = TfidfVectorizer().fit_transform([" ".join(data_a), " ".join(data_b)])
                 sim_score = float(cosine_similarity(v_comp[0], v_comp[1])[0][0])
-                st.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
+                mid_col = st.columns([1,2,1])[1]
+                mid_col.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
+                mid_col.progress(sim_score)
+                st.divider()
                 comp_cols[0].pyplot(generate_word_cloud(data_a, palette_opt, shape_opt))
                 comp_cols[1].pyplot(generate_word_cloud(data_b, palette_opt, shape_opt))
 
@@ -181,11 +214,19 @@ if uploaded_file:
             res, err = run_fca(df, p_col, fmin_global, use_tfidf)
             if not err:
                 r_c, c_c, prods, wrds, var = res
-                fig, ax = plt.subplots(figsize=(10, 6))
-                ax.scatter(r_c[:,0], r_c[:,1], c='blue', alpha=0.6)
-                for i, t in enumerate(prods): ax.text(r_c[i,0], r_c[i,1], t, color='blue', fontweight='bold')
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=150, alpha=0.7)
+                for i, txt in enumerate(prods): 
+                    ax.text(r_c[i,0]+0.02, r_c[i,1]+0.02, txt, fontweight='bold', color='darkblue')
                 ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.3)
+                for i, txt in enumerate(wrds):
+                    dist = np.linalg.norm(c_c[i])
+                    if dist > np.percentile([np.linalg.norm(c) for c in c_c], 70):
+                        ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=9)
+                ax.axhline(0, color='black', lw=0.5, ls='--')
+                ax.axvline(0, color='black', lw=0.5, ls='--')
                 st.pyplot(fig)
+            else: st.error(err)
 
         with tab4:
             st.subheader("🔍 Topic Lab")
@@ -193,88 +234,20 @@ if uploaded_file:
             if st.button("Generate Topic Models"):
                 vec_t = TfidfVectorizer(max_features=1000)
                 mtx_t = vec_t.fit_transform(df['cleaned'])
-                nmf = NMF(n_components=num_t, random_state=42).fit(mtx_t)
+                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx_t)
                 feature_names = vec_t.get_feature_names_out()
+                t_cols = st.columns(min(num_t, 3))
                 for i, topic in enumerate(nmf.components_):
-                    st.info(f"Theme {i+1}: " + ", ".join([feature_names[j] for j in topic.argsort()[-10:]]))
-
-        # --- IMPROVED Tab 5: Driver Map (CCA / Symmetric Biplot) ---
-        with tab_cca:
-            st.subheader("📈 Driver Analysis: Why do they like it?")
-            
-            # Aggregate data per product for the map
-            prod_summary = df.groupby(p_col).agg({'cleaned': lambda x: " ".join(x), s_col: 'mean'}).reset_index()
-            
-            if len(prod_summary) >= 3:
-                # 1. Vectorize with TF-IDF
-                vec = TfidfVectorizer(min_df=fmin_global)
-                X = vec.fit_transform(prod_summary['cleaned']).toarray()
-                words = vec.get_feature_names_out()
-                
-                # 2. Symmetric Scaling for Biplot (Standardization is key)
-                X_std = StandardScaler().fit_transform(X)
-                svd = TruncatedSVD(n_components=2, random_state=42)
-                
-                # Project Products and Words into same scale
-                prod_coords = svd.fit_transform(X_std)
-                word_coords = svd.components_.T * np.sqrt(svd.explained_variance_ratio_)
-                
-                # 3. Calculate Driver Vector (Correlation with Score)
-                scores_std = StandardScaler().fit_transform(prod_summary[[s_col]])
-                vx = np.corrcoef(prod_coords[:, 0], scores_std.flatten())[0, 1]
-                vy = np.corrcoef(prod_coords[:, 1], scores_std.flatten())[0, 1]
-                
-                # 4. Plotting
-                fig, ax = plt.subplots(figsize=(12, 10))
-                ax.axhline(0, color='gray', alpha=0.2); ax.axvline(0, color='gray', alpha=0.2)
-                
-                # Plot Products (Blue)
-                ax.scatter(prod_coords[:,0], prod_coords[:,1], c='blue', s=150, alpha=0.6, label='Products')
-                for i, txt in enumerate(prod_summary[p_col]):
-                    ax.text(prod_coords[i,0]+0.05, prod_coords[i,1]+0.05, txt, fontweight='bold', color='darkblue')
-                
-                # Plot Words (Filtered for impact)
-                # We show words that are most descriptive (highest variance)
-                impact = np.linalg.norm(word_coords, axis=1)
-                top_idx = impact.argsort()[-40:] 
-                
-                for i in top_idx:
-                    ax.text(word_coords[i,0]*5, word_coords[i,1]*5, words[i], color='red', alpha=0.5, fontsize=9)
-                
-                # Plot the "Liking" Arrow
-                arrow_len = np.max(np.abs(prod_coords)) * 0.8
-                ax.arrow(0, 0, vx*arrow_len, vy*arrow_len, color='green', width=0.03, head_width=0.1)
-                ax.text(vx*arrow_len*1.2, vy*arrow_len*1.2, "HIGHER LIKING", color='green', fontweight='bold')
-                
-                st.pyplot(fig)
-                
-                # 5. Semantic Correlation Table (The "Truth" Table)
-                st.divider()
-                st.write("### 💎 Statistical Scent Drivers")
-                
-                # Calculate direct correlation between word presence and score
-                word_presence = (X > 0).astype(int)
-                corrs = []
-                for i, word in enumerate(words):
-                    c = np.corrcoef(word_presence[:, i], prod_summary[s_col])[0, 1]
-                    corrs.append((word, c))
-                
-                corrs_df = pd.DataFrame(corrs, columns=['Word', 'Impact']).sort_values(by='Impact', ascending=False).dropna()
-                
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.success("**Top Positive Drivers** (Mentioned when scores are high)")
-                    st.dataframe(corrs_df.head(10), use_container_width=True)
-                with c2:
-                    st.error("**Top Negative Drivers** (Mentioned when scores are low)")
-                    st.dataframe(corrs_df.tail(10).sort_values(by="Impact"), use_container_width=True)
-
-            else:
-                st.warning("Need at least 3 products for meaningful driver mapping.")
+                    with t_cols[i % 3]:
+                        top_words = [feature_names[j] for j in topic.argsort()[-10:]]
+                        st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        relevance = mtx_t.dot(topic)
+                        st.caption(f"Lead Product: {df.iloc[relevance.argmax()][p_col]}")
 
 with tab5:
     st.subheader("🚫 Exclusions")
-    txt = st.text_area("Stopwords", value=", ".join(st.session_state.custom_stop_list), height=300)
-    if st.button("Update"):
+    st.info(f"Language context: **{st.session_state.get('current_lang', 'Not Set')}**")
+    txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
+    if st.button("Update Exclusions"):
         st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
         st.rerun()
