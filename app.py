@@ -50,52 +50,69 @@ lemmatizer = setup_nltk()
 
 def clean_text(text, custom_stops, lang_choice):
     if not text or pd.isna(text): return ""
-    
-    lang_map = {
-        "English": "english", "French": "french", "German": "german",
-        "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"
-    }
-    
+    lang_map = {"English": "english", "French": "french", "German": "german", "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"}
     try:
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
 
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
-
-    fragrance_merges = {
-        "freshness": "fresh",
-        "freshly": "fresh",
-        "fruity": "fruit",
-        "smelling": "smell",
-        "scented": "scent",
-        "floral": "flower",
-        "flowers": "flower",
-        "cleanliness": "clean",
-        "cleaning": "clean"
-    }
+    fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
 
     words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
-    
     cleaned = []
     for w in words:
         lemma = lemmatizer.lemmatize(w)
         lemma = fragrance_merges.get(lemma, lemma)
-        if (lemma not in base_stops and 
-            lemma not in custom_stops_set and 
-            len(lemma) > 2):
+        if (lemma not in base_stops and lemma not in custom_stops_set and len(lemma) > 2):
             cleaned.append(lemma)
-            
     return " ".join(cleaned)
 
 # --- Analysis Functions ---
 def get_sentiment_words(text_series):
     words = " ".join(text_series).split()
+    if not words: return [], []
     unique_words = list(set(words))
     scored = [(w, TextBlob(w).sentiment.polarity) for w in unique_words]
     pos = sorted([x for x in scored if x[1] > 0.1], key=lambda x: x[1], reverse=True)[:10]
     neg = sorted([x for x in scored if x[1] < -0.1], key=lambda x: x[1])[:10]
     return pos, neg
+
+def generate_word_cloud(text_series, palette, shape):
+    combined_text = " ".join(text_series).strip()
+    # SAFETY GATE: Check if text is empty to prevent ValueError
+    if not combined_text:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No descriptive words found.\nTry adjusting exclusions or frequency.", ha='center', va='center')
+        ax.axis("off")
+        return fig
+
+    mask = None
+    if shape == "Round":
+        img = Image.new("L", (800, 800), 255)
+        draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
+    
+    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
+    wc.generate(combined_text)
+    fig, ax = plt.subplots(); ax.imshow(wc, interpolation='bilinear'); ax.axis("off")
+    return fig
+
+def generate_word_tree(text_series, min_freq, palette):
+    valid = [t for t in text_series if len(t.split()) > 1]
+    if not valid: return None
+    try:
+        vec = CountVectorizer(min_df=min_freq)
+        mtx = vec.fit_transform(valid); words = vec.get_feature_names_out()
+        if len(words) < 2: return None
+        adj = (mtx.T * mtx); adj.setdiag(0); G = nx.from_scipy_sparse_array(adj)
+        G = nx.relabel_nodes(G, {i: w for i, w in enumerate(words)})
+        T = nx.maximum_spanning_tree(G)
+        fig, ax = plt.subplots(figsize=(8,6))
+        pos = nx.spring_layout(T, k=1.5, seed=42); part = community_louvain.best_partition(T)
+        nx.draw_networkx_nodes(T, pos, node_size=2000, node_color=list(part.values()), cmap=palette, alpha=0.8)
+        nx.draw_networkx_labels(T, pos, font_size=8, font_weight='bold'); nx.draw_networkx_edges(T, pos, alpha=0.2)
+        plt.axis('off'); return fig
+    except: return None
 
 def run_fca(df, p_col, fmin, use_tfidf):
     grouped = df.groupby(p_col)['cleaned'].apply(lambda x: " ".join(x))
@@ -110,37 +127,10 @@ def run_fca(df, p_col, fmin, use_tfidf):
     col_coords = svd.components_.T * (np.std(row_coords) / (np.std(svd.components_.T) + 1e-9))
     return (row_coords, col_coords, products, words, svd.explained_variance_ratio_), None
 
-def generate_word_cloud(text_series, palette, shape):
-    mask = None
-    if shape == "Round":
-        img = Image.new("L", (800, 800), 255)
-        draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
-    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
-    wc.generate(" ".join(text_series))
-    fig, ax = plt.subplots(); ax.imshow(wc); ax.axis("off"); return fig
-
-def generate_word_tree(text_series, min_freq, palette):
-    valid = [t for t in text_series if len(t.split()) > 1]
-    if not valid: return None
-    try:
-        vec = CountVectorizer(min_df=min_freq)
-        mtx = vec.fit_transform(valid); words = vec.get_feature_names_out()
-        adj = (mtx.T * mtx); adj.setdiag(0); G = nx.from_scipy_sparse_array(adj)
-        G = nx.relabel_nodes(G, {i: w for i, w in enumerate(words)})
-        T = nx.maximum_spanning_tree(G)
-        fig, ax = plt.subplots(figsize=(8,6))
-        pos = nx.spring_layout(T, k=1.5, seed=42); part = community_louvain.best_partition(T)
-        nx.draw_networkx_nodes(T, pos, node_size=2000, node_color=list(part.values()), cmap=palette, alpha=0.8)
-        nx.draw_networkx_labels(T, pos, font_size=8, font_weight='bold'); nx.draw_networkx_edges(T, pos, alpha=0.2)
-        plt.axis('off'); return fig
-    except: return None
-
 # --- UI Setup ---
 with st.sidebar:
     st.header("⚙️ Global Settings")
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
-    
-    st.subheader("🌍 Language & Logic")
     dataset_lang = st.selectbox("Dataset Language:", list(MULTILINGUAL_STOPWORDS.keys()))
     
     if 'current_lang' not in st.session_state or st.session_state.current_lang != dataset_lang:
@@ -190,21 +180,24 @@ if uploaded_file:
                 st.write("**Word Tree (Scent Accords)**")
                 tree_fig = generate_word_tree(p_sub, fmin_global, palette_opt)
                 if tree_fig: st.pyplot(tree_fig)
+                else: st.warning("Not enough repeated word combinations to build a tree.")
 
             st.divider()
             pos_words, neg_words = get_sentiment_words(p_sub)
             l_col, r_col = st.columns(2)
             with l_col:
                 st.success("✨ **Top Positive Descriptors**")
-                for w, s in pos_words: st.write(f"- {w}")
+                if pos_words: 
+                    for w, s in pos_words: st.write(f"- {w}")
+                else: st.caption("No strong positive words detected.")
             with r_col:
                 st.error("⚠️ **Top Negative Descriptors**")
-                for w, s in neg_words: st.write(f"- {w}")
+                if neg_words:
+                    for w, s in neg_words: st.write(f"- {w}")
+                else: st.caption("No strong negative words detected.")
 
         with tab2:
             st.subheader("⚔️ Scent Comparison")
-            st.info("**Olfactive Similarity Score:** This measures how closely the consumer descriptions of two fragrances align. It uses **Cosine Similarity** to compare descriptive keywords. 100% means consumers used identical vocabulary; a lower score suggests distinct sensory experiences.")
-            
             comp_cols = st.columns(2)
             prod_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
             prod_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
@@ -244,8 +237,6 @@ if uploaded_file:
                 mtx_t = vec_t.fit_transform(df['cleaned'])
                 nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx_t)
                 feature_names = vec_t.get_feature_names_out()
-                
-                # Document-topic matrix to find the most relevant product
                 doc_topic = nmf.transform(mtx_t)
                 
                 t_cols = st.columns(min(num_t, 3))
@@ -253,15 +244,15 @@ if uploaded_file:
                     with t_cols[i % 3]:
                         top_words = [feature_names[j] for j in topic.argsort()[-10:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
-                        
-                        # Identify the product index that has the highest score for this topic
                         lead_idx = doc_topic[:, i].argmax()
                         lead_prod = df.iloc[lead_idx][p_col]
                         st.caption(f"📍 **Lead Product:** {lead_prod}")
 
 with tab5:
     st.subheader("🚫 Exclusions")
-    txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(st.session_state.custom_stop_list), height=300)
+    # Provide a default list if session state isn't initialized yet
+    default_stops = st.session_state.get('custom_stop_list', MULTILINGUAL_STOPWORDS["English"])
+    txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(default_stops), height=300)
     if st.button("Update Exclusions"):
         st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
         st.rerun()
