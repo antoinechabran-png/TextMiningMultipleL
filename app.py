@@ -1,155 +1,258 @@
 import streamlit as st
 import pandas as pd
+import nltk
+from nltk.stem import WordNetLemmatizer
+import networkx as nx
+from community import community_louvain
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.decomposition import TruncatedSVD, NMF
+import re
 import numpy as np
-import statsmodels.api as sm
-import shap
-import plotly.express as px
-import plotly.graph_objects as go
-from io import BytesIO
-from semopy import Model
+from PIL import Image, ImageDraw
+from textblob import TextBlob
 
-st.set_page_config(page_title="Consumer Driver Analysis Tool", layout="wide")
+# Page Config
+st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
-# --- HELPER FUNCTIONS ---
-def to_excel(df_dict):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for sheet_name, df in df_dict.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=True)
-    return output.getvalue()
+# --- Multilingual Exclusion Dictionary ---
+MULTILINGUAL_STOPWORDS = {
+    "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "seem", "evoke", "find", "remind"],
+    "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
+    "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
+    "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
+    "Portuguese": ["producto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
+    "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
+}
 
-def run_rwa(X, y):
-    """Simple Relative Weight Analysis implementation via correlation transformation."""
-    # Orthogonalize predictors
-    corr_matrix = X.corr()
-    eigenvalues, eigenvectors = np.linalg.eigh(corr_matrix)
-    # Ensure no negative eigenvalues due to precision
-    eigenvalues = np.maximum(eigenvalues, 1e-10)
-    diagonal_sqrt_evals = np.diag(np.sqrt(eigenvalues))
-    # Transformation matrix
-    delta = eigenvectors @ diagonal_sqrt_evals @ eigenvectors.T
-    transformed_X = np.linalg.inv(delta) @ X.T
-    # Regression on transformed
-    model = sm.OLS(y, sm.add_constant(transformed_X.T)).fit()
-    raw_weights = (delta**2) @ (model.params[1:]**2)
-    rescaled_weights = (raw_weights / raw_weights.sum()) * 100
-    return pd.DataFrame({'Driver': X.columns, 'Relative Weight (%)': rescaled_weights})
+# --- Font Injection ---
+def apply_custom_font(font_name):
+    font_css = f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@400;700&display=swap');
+    html, body, [class*="css"], .stText, .stMarkdown {{ font-family: '{font_name}', sans-serif; }}
+    </style>
+    """
+    st.markdown(font_css, unsafe_allow_html=True)
 
-# --- UI APP ---
-st.title("📊 Consumer Driver Analysis Suite")
-st.markdown("Upload your Excel file, select the sheet, and define your variables.")
+# --- NLP Engine ---
+@st.cache_resource
+def setup_nltk():
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    return WordNetLemmatizer()
 
-uploaded_file = st.file_uploader("Choose an Excel file", type="xlsx")
+lemmatizer = setup_nltk()
+
+def clean_text(text, custom_stops, lang_choice):
+    if not text or pd.isna(text): return ""
+    lang_map = {"English": "english", "French": "french", "German": "german", "Spanish": "spanish", "Portuguese": "portuguese", "Italian": "italian", "Indonesian": "indonesian"}
+    try:
+        base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
+    except:
+        base_stops = set()
+
+    custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
+    fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
+
+    words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
+    cleaned = []
+    for w in words:
+        lemma = lemmatizer.lemmatize(w)
+        lemma = fragrance_merges.get(lemma, lemma)
+        if (lemma not in base_stops and lemma not in custom_stops_set and len(lemma) > 2):
+            cleaned.append(lemma)
+    return " ".join(cleaned)
+
+# --- Analysis Functions ---
+def get_sentiment_words(text_series):
+    words = " ".join(text_series).split()
+    if not words: return [], []
+    unique_words = list(set(words))
+    scored = [(w, TextBlob(w).sentiment.polarity) for w in unique_words]
+    pos = sorted([x for x in scored if x[1] > 0.1], key=lambda x: x[1], reverse=True)[:10]
+    neg = sorted([x for x in scored if x[1] < -0.1], key=lambda x: x[1])[:10]
+    return pos, neg
+
+def generate_word_cloud(text_series, palette, shape):
+    combined_text = " ".join(text_series).strip()
+    # SAFETY GATE: Check if text is empty to prevent ValueError
+    if not combined_text:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No descriptive words found.\nTry adjusting exclusions or frequency.", ha='center', va='center')
+        ax.axis("off")
+        return fig
+
+    mask = None
+    if shape == "Round":
+        img = Image.new("L", (800, 800), 255)
+        draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
+    
+    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
+    wc.generate(combined_text)
+    fig, ax = plt.subplots(); ax.imshow(wc, interpolation='bilinear'); ax.axis("off")
+    return fig
+
+def generate_word_tree(text_series, min_freq, palette):
+    valid = [t for t in text_series if len(t.split()) > 1]
+    if not valid: return None
+    try:
+        vec = CountVectorizer(min_df=min_freq)
+        mtx = vec.fit_transform(valid); words = vec.get_feature_names_out()
+        if len(words) < 2: return None
+        adj = (mtx.T * mtx); adj.setdiag(0); G = nx.from_scipy_sparse_array(adj)
+        G = nx.relabel_nodes(G, {i: w for i, w in enumerate(words)})
+        T = nx.maximum_spanning_tree(G)
+        fig, ax = plt.subplots(figsize=(8,6))
+        pos = nx.spring_layout(T, k=1.5, seed=42); part = community_louvain.best_partition(T)
+        nx.draw_networkx_nodes(T, pos, node_size=2000, node_color=list(part.values()), cmap=palette, alpha=0.8)
+        nx.draw_networkx_labels(T, pos, font_size=8, font_weight='bold'); nx.draw_networkx_edges(T, pos, alpha=0.2)
+        plt.axis('off'); return fig
+    except: return None
+
+def run_fca(df, p_col, fmin, use_tfidf):
+    grouped = df.groupby(p_col)['cleaned'].apply(lambda x: " ".join(x))
+    if len(grouped) < 3: return None, "Need 3+ products for Factorial Mapping."
+    VecClass = TfidfVectorizer if use_tfidf else CountVectorizer
+    vec = VecClass(min_df=fmin) 
+    X = vec.fit_transform(grouped).toarray()
+    words, products = vec.get_feature_names_out(), grouped.index.tolist()
+    X_centered = X - np.mean(X, axis=0)
+    svd = TruncatedSVD(n_components=2, random_state=42)
+    row_coords = svd.fit_transform(X_centered)
+    col_coords = svd.components_.T * (np.std(row_coords) / (np.std(svd.components_.T) + 1e-9))
+    return (row_coords, col_coords, products, words, svd.explained_variance_ratio_), None
+
+# --- UI Setup ---
+with st.sidebar:
+    st.header("⚙️ Global Settings")
+    uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
+    dataset_lang = st.selectbox("Dataset Language:", list(MULTILINGUAL_STOPWORDS.keys()))
+    
+    if 'current_lang' not in st.session_state or st.session_state.current_lang != dataset_lang:
+        st.session_state.current_lang = dataset_lang
+        st.session_state.custom_stop_list = MULTILINGUAL_STOPWORDS[dataset_lang]
+
+    st.subheader("🎨 Brand Styling")
+    selected_font = st.selectbox("App Font:", ["Inter", "Helvetica Neue", "Playfair Display", "Clash Display"])
+    apply_custom_font(selected_font)
+
+    use_tfidf = st.toggle("Use TF-IDF Weighting", value=True)
+    fmin_global = st.slider("Min Word Frequency", 1, 50, 5)
+    st.divider()
+    shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
+    palette_opt = st.selectbox("Color Palette", ["copper", "GnBu", "RdPu", "viridis"])
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🚫 Exclusions"])
 
 if uploaded_file:
-    # 1. NEW: Get sheet names
-    xl = pd.ExcelFile(uploaded_file)
-    sheet_names = xl.sheet_names
-    
-    selected_sheet = st.selectbox("Select the Sheet to Analyze", sheet_names)
-    
-    # 2. Load the specific sheet
-    df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-    st.write(f"### Data Preview: {selected_sheet}", df.head())
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        target = st.selectbox("Select Target Variable (e.g., Liking)", df.columns)
-    with col2:
-        features = st.multiselect("Select Driver Variables", [c for c in df.columns if c != target])
-    
-    if target and features:
-        # Data Cleaning
-        data = df[[target] + features].dropna()
-        y = data[target]
-        X = data[features]
+    df = pd.read_excel(uploaded_file)
+    p_col = st.sidebar.selectbox("Product ID Column", df.columns)
+    v_col = st.sidebar.selectbox("Verbatim Column", df.columns)
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Linear Reg & RWA", "Shapley Values", "Penalty Analysis (CATA)", "Path Analysis", "Export"])
+    if st.sidebar.button("🚀 Run Full Analysis"):
+        df = df.dropna(subset=[v_col])
+        df['cleaned'] = df[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang))
+        st.session_state['processed_df'] = df
 
-        # --- TAB 1: REGRESSION & RWA ---
+    if 'processed_df' in st.session_state:
+        df = st.session_state['processed_df']
+        p_list = sorted(df[p_col].dropna().astype(str).unique())
+
         with tab1:
-            st.subheader("Linear Regression & Relative Weight Analysis")
-            model = sm.OLS(y, sm.add_constant(X)).fit()
+            target = st.selectbox("Fragrance Focus", p_list, key="single_focus")
+            p_sub = df[df[p_col].astype(str) == target]['cleaned']
             
-            # RWA Calculation
-            rwa_results = run_rwa(X, y)
-            fig_rwa = px.bar(rwa_results, x='Driver', y='Relative Weight (%)', title="Importance (RWA)")
-            st.plotly_chart(fig_rwa)
-            st.write(rwa_results)
+            sent_val = df[df[p_col].astype(str) == target][v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
+            st.metric("Overall Fragrance Mood", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
+            st.progress((sent_val + 1) / 2)
+            st.divider()
 
-        # --- TAB 2: SHAPLEY VALUES ---
+            c1, c2 = st.columns(2)
+            with c1: 
+                st.write("**Word Cloud**")
+                st.pyplot(generate_word_cloud(p_sub, palette_opt, shape_opt))
+            with c2: 
+                st.write("**Word Tree (Scent Accords)**")
+                tree_fig = generate_word_tree(p_sub, fmin_global, palette_opt)
+                if tree_fig: st.pyplot(tree_fig)
+                else: st.warning("Not enough repeated word combinations to build a tree.")
+
+            st.divider()
+            pos_words, neg_words = get_sentiment_words(p_sub)
+            l_col, r_col = st.columns(2)
+            with l_col:
+                st.success("✨ **Top Positive Descriptors**")
+                if pos_words: 
+                    for w, s in pos_words: st.write(f"- {w}")
+                else: st.caption("No strong positive words detected.")
+            with r_col:
+                st.error("⚠️ **Top Negative Descriptors**")
+                if neg_words:
+                    for w, s in neg_words: st.write(f"- {w}")
+                else: st.caption("No strong negative words detected.")
+
         with tab2:
-            st.subheader("Shapley Value Regression")
-            explainer = shap.LinearExplainer(model, X)
-            shap_values = explainer.shap_values(X)
-            vals = np.abs(shap_values).mean(0)
-            shap_df = pd.DataFrame(list(zip(features, vals)), columns=['Driver','Mean |Shapley Value|']).sort_values(by='Mean |Shapley Value|', ascending=False)
+            st.subheader("⚔️ Scent Comparison")
+            comp_cols = st.columns(2)
+            prod_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
+            prod_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
             
-            fig_shap = px.bar(shap_df, x='Mean |Shapley Value|', y='Driver', orientation='h', title="Global Feature Importance (SHAP)")
-            st.plotly_chart(fig_shap)
+            data_a = df[df[p_col].astype(str) == prod_a]['cleaned']
+            data_b = df[df[p_col].astype(str) == prod_b]['cleaned']
+            
+            if not data_a.empty and not data_b.empty:
+                v_comp = TfidfVectorizer().fit_transform([" ".join(data_a), " ".join(data_b)])
+                sim_score = float(cosine_similarity(v_comp[0], v_comp[1])[0][0])
+                st.metric("Olfactive Similarity", f"{round(sim_score*100, 1)}%")
+                st.progress(sim_score)
+                st.divider()
+                comp_cols[0].pyplot(generate_word_cloud(data_a, palette_opt, shape_opt))
+                comp_cols[1].pyplot(generate_word_cloud(data_b, palette_opt, shape_opt))
 
-        # --- TAB 3: PENALTY ANALYSIS ---
         with tab3:
-            st.subheader("Penalty Analysis for CATA")
-            cata_format = st.radio("CATA Data Format", ["0 (No) / 1 (Yes)", "1 (No) / 2 (Yes)"], help="Format of your binary data")
-            
-            # Normalize to 0 (No) and 1 (Yes)
-            X_cata = X.copy()
-            if cata_format == "1 (No) / 2 (Yes)":
-                X_cata = X_cata - 1
-            
-            penalty_results = []
-            for col in features:
-                group_yes = y[X_cata[col] == 1]
-                group_no = y[X_cata[col] == 0]
-                if len(group_yes) > 0 and len(group_no) > 0:
-                    mean_drop = group_yes.mean() - group_no.mean()
-                    pct_checked = (X_cata[col].sum() / len(X_cata)) * 100
-                    penalty_results.append({'Attribute': col, 'Mean Drop/Gain': mean_drop, '% Checked': pct_checked})
-            
-            penalty_df = pd.DataFrame(penalty_results)
-            if not penalty_df.empty:
-                fig_pen = px.scatter(penalty_df, x='% Checked', y='Mean Drop/Gain', text='Attribute', 
-                                   title="Penalty/Reward Map", size_max=60)
-                fig_pen.update_traces(textposition='top center')
-                # Add a zero line for visual reference
-                fig_pen.add_hline(y=0, line_dash="dash", line_color="gray")
-                st.plotly_chart(fig_pen)
-                st.write(penalty_df)
-            else:
-                st.warning("No binary variation found in selected features.")
+            st.subheader("🌐 Factorial Correspondence Analysis")
+            res, err = run_fca(df, p_col, fmin_global, use_tfidf)
+            if not err:
+                r_c, c_c, prods, wrds, var = res
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=150, alpha=0.7)
+                for i, txt in enumerate(prods): ax.text(r_c[i,0]+0.02, r_c[i,1]+0.02, txt, fontweight='bold')
+                ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.3)
+                for i, txt in enumerate(wrds):
+                    if np.linalg.norm(c_c[i]) > np.percentile([np.linalg.norm(c) for c in c_c], 70):
+                        ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=9)
+                st.pyplot(fig)
+            else: st.error(err)
 
-        # --- TAB 4: PATH ANALYSIS ---
         with tab4:
-            st.subheader("Simple Path Analysis (SEM)")
-            st.info("Define your model syntax (e.g., Target ~ Driver1 + Driver2)")
-            default_path = f"{target} ~ {' + '.join(features[:3])}"
-            path_syntax = st.text_area("semopy Syntax", value=default_path)
-            
-            if st.button("Run Path Analysis"):
-                try:
-                    sem = Model(path_syntax)
-                    sem.fit(data)
-                    estimates = sem.inspect()
-                    st.write(estimates)
-                except Exception as e:
-                    st.error(f"Error in SEM syntax or data: {e}")
+            st.subheader("🔍 Topic Lab")
+            num_t = st.slider("Number of Themes", 2, 8, 4)
+            if st.button("Generate Topic Models"):
+                vec_t = TfidfVectorizer(max_features=1000)
+                mtx_t = vec_t.fit_transform(df['cleaned'])
+                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx_t)
+                feature_names = vec_t.get_feature_names_out()
+                doc_topic = nmf.transform(mtx_t)
+                
+                t_cols = st.columns(min(num_t, 3))
+                for i, topic in enumerate(nmf.components_):
+                    with t_cols[i % 3]:
+                        top_words = [feature_names[j] for j in topic.argsort()[-10:]]
+                        st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        lead_idx = doc_topic[:, i].argmax()
+                        lead_prod = df.iloc[lead_idx][p_col]
+                        st.caption(f"📍 **Lead Product:** {lead_prod}")
 
-        # --- TAB 5: EXPORT ---
-        with tab5:
-            st.subheader("Export Results to Excel")
-            # Creating a summary of the Linear Regression
-            reg_summary = pd.DataFrame({
-                "Coeff": model.params,
-                "P-Value": model.pvalues,
-                "Std Error": model.bse
-            })
-            
-            results_dict = {
-                "Regression_Summary": reg_summary,
-                "RWA_Importance": rwa_results,
-                "Shapley_Importance": shap_df,
-                "Penalty_Analysis": penalty_df
-            }
-            excel_data = to_excel(results_dict)
-            st.download_button(label="📥 Download All Analyses", data=excel_data, file_name=f"{selected_sheet}_analysis_results.xlsx")
+with tab5:
+    st.subheader("🚫 Exclusions")
+    # Provide a default list if session state isn't initialized yet
+    default_stops = st.session_state.get('custom_stop_list', MULTILINGUAL_STOPWORDS["English"])
+    txt = st.text_area("Edit contextual exclusions (comma separated)", value=", ".join(default_stops), height=300)
+    if st.button("Update Exclusions"):
+        st.session_state.custom_stop_list = [x.strip().lower() for x in txt.split(",") if x.strip()]
+        st.rerun()
