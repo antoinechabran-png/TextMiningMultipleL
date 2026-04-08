@@ -1,5 +1,5 @@
 import streamlit as st
-import pandas as pd  # FIXED: was 'import pd as pd'
+import pandas as pd
 import nltk
 from nltk.stem import WordNetLemmatizer
 import networkx as nx
@@ -68,7 +68,7 @@ def get_sentiment_words(text_series):
     neg = sorted([x for x in scored if x[1] < -0.1], key=lambda x: x[1])[:10]
     return pos, neg
 
-def generate_word_cloud(text_series, palette, shape):
+def generate_word_cloud(text_series, palette, shape, allow_collocations):
     combined_text = " ".join(text_series).strip()
     if not combined_text:
         fig, ax = plt.subplots(); ax.text(0.5, 0.5, "No text available", ha='center'); ax.axis("off")
@@ -77,7 +77,7 @@ def generate_word_cloud(text_series, palette, shape):
     if shape == "Round":
         img = Image.new("L", (800, 800), 255)
         draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
-    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
+    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=allow_collocations)
     wc.generate(combined_text)
     fig, ax = plt.subplots(); ax.imshow(wc, interpolation='bilinear'); ax.axis("off")
     return fig
@@ -99,11 +99,11 @@ def generate_word_tree(text_series, min_freq, palette):
         plt.axis('off'); return fig
     except: return None
 
-def run_fca(df, p_col, fmin, use_tfidf):
+def run_fca(df, p_col, fmin, use_tfidf, ngrams):
     grouped = df.groupby(p_col)['cleaned'].apply(lambda x: " ".join(x))
     if len(grouped) < 3: return None, "Need 3+ products for Factorial Mapping."
     VecClass = TfidfVectorizer if use_tfidf else CountVectorizer
-    vec = VecClass(min_df=min(fmin, len(grouped))) 
+    vec = VecClass(min_df=min(fmin, len(grouped)), ngram_range=ngrams) 
     X = vec.fit_transform(grouped).toarray()
     words, products = vec.get_feature_names_out(), grouped.index.tolist()
     X_centered = X - np.mean(X, axis=0)
@@ -131,6 +131,17 @@ with st.sidebar:
             if selected_codes:
                 target_indices = df_raw[df_raw[filter_col].isin(selected_codes)].index
                 filter_label = f"{filter_col}: {', '.join(map(str, selected_codes))}"
+
+        st.divider()
+        st.subheader("🧪 Text Mining Logic")
+        ngram_choice = st.radio("Active Grams:", ["1-Gram (Single Words)", "1 & 2-Grams (Pairs)", "1, 2 & 3-Grams (Phrases)"])
+        ngram_map = {
+            "1-Gram (Single Words)": (1, 1),
+            "1 & 2-Grams (Pairs)": (1, 2),
+            "1, 2 & 3-Grams (Phrases)": (1, 3)
+        }
+        selected_ngram_range = ngram_map[ngram_choice]
+        allow_collocations = True if selected_ngram_range[1] > 1 else False
 
         st.divider()
         dataset_lang = st.selectbox("Language:", list(MULTILINGUAL_STOPWORDS.keys()))
@@ -170,7 +181,7 @@ if uploaded_file:
             st.progress((sent_val + 1) / 2)
             
             c1, c2 = st.columns(2)
-            with c1: st.pyplot(generate_word_cloud(p_sub_cleaned, palette_opt, shape_opt))
+            with c1: st.pyplot(generate_word_cloud(p_sub_cleaned, palette_opt, shape_opt, allow_collocations))
             with c2: 
                 tree_fig = generate_word_tree(p_sub_cleaned, fmin_global, palette_opt)
                 if tree_fig: st.pyplot(tree_fig)
@@ -195,14 +206,14 @@ if uploaded_file:
             d_b = df[df[p_col].astype(str) == p_b]['cleaned']
             
             if not d_a.empty and not d_b.empty:
-                sim = float(cosine_similarity(TfidfVectorizer().fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
+                sim = float(cosine_similarity(TfidfVectorizer(ngram_range=selected_ngram_range).fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
                 st.metric("Sub-Target Olfactive Similarity", f"{round(sim*100, 1)}%")
-                comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt))
-                comp_cols[1].pyplot(generate_word_cloud(d_b, palette_opt, shape_opt))
+                comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt, allow_collocations))
+                comp_cols[1].pyplot(generate_word_cloud(d_b, palette_opt, shape_opt, allow_collocations))
 
         with tab3:
             st.subheader("🌐 Factorial Mapping (Sub-Target Only)")
-            res, err = run_fca(df, p_col, fmin_global, use_tfidf)
+            res, err = run_fca(df, p_col, fmin_global, use_tfidf, selected_ngram_range)
             if not err:
                 r_c, c_c, prods, wrds, _ = res
                 fig, ax = plt.subplots(figsize=(10, 6))
@@ -219,7 +230,7 @@ if uploaded_file:
             st.subheader("🔍 Topic Lab (Sub-Target Only)")
             num_t = st.slider("Themes", 2, 8, 3)
             if st.button("Generate Topics"):
-                vec = TfidfVectorizer(max_features=500)
+                vec = TfidfVectorizer(max_features=500, ngram_range=selected_ngram_range)
                 mtx = vec.fit_transform(df['cleaned'])
                 nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx)
                 
