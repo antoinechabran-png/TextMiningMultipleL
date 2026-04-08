@@ -1,5 +1,5 @@
 import streamlit as st
-import pandas as pd
+import pd as pd
 import nltk
 from nltk.stem import WordNetLemmatizer
 import networkx as nx
@@ -149,7 +149,6 @@ if uploaded_file:
     v_col = st.sidebar.selectbox("Verbatim Column", df_raw.columns)
 
     if st.sidebar.button("🚀 Run Analysis on Sub-Target"):
-        # RE-CALCULATE EVERYTHING BASED ON SUB-TARGET INDICES
         df_filtered = df_raw.loc[target_indices].dropna(subset=[v_col])
         df_filtered['cleaned'] = df_filtered[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang))
         st.session_state['processed_df'] = df_filtered
@@ -163,16 +162,13 @@ if uploaded_file:
 
         with tab1:
             target_p = st.selectbox("Fragrance Focus", p_list)
-            # Filter the already sub-targeted df for the specific product
             product_data = df[df[p_col].astype(str) == target_p]
             p_sub_cleaned = product_data['cleaned']
             
-            # 1. MOOD RECALCULATION (Strictly on Filtered Data)
             sent_val = product_data[v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric(f"Target Mood: {target_p}", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
             st.progress((sent_val + 1) / 2)
             
-            # 2. VISUALS (Word Cloud / Word Tree)
             c1, c2 = st.columns(2)
             with c1: st.pyplot(generate_word_cloud(p_sub_cleaned, palette_opt, shape_opt))
             with c2: 
@@ -180,7 +176,6 @@ if uploaded_file:
                 if tree_fig: st.pyplot(tree_fig)
                 else: st.warning("Not enough patterns in this sub-target.")
 
-            # 3. DESCRIPTORS RECALCULATION
             pos_words, neg_words = get_sentiment_words(p_sub_cleaned)
             l, r = st.columns(2)
             with l:
@@ -226,12 +221,27 @@ if uploaded_file:
             if st.button("Generate Topics"):
                 vec = TfidfVectorizer(max_features=500)
                 mtx = vec.fit_transform(df['cleaned'])
-                nmf = NMF(n_components=num_t, random_state=42).fit(mtx)
+                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx)
+                
+                # AFFINITY CALCULATION
+                doc_topic = nmf.transform(mtx)
                 fn = vec.get_feature_names_out()
                 cols = st.columns(num_t)
+                
                 for i, topic in enumerate(nmf.components_):
-                    top = [fn[j] for j in topic.argsort()[-7:]]
-                    cols[i].info(f"**Theme {i+1}**\n\n" + ", ".join(top))
+                    with cols[i % num_t]:
+                        top_words = [fn[j] for j in topic.argsort()[-7:]]
+                        st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        
+                        # Find closest and furthest product codes
+                        closest_idx = doc_topic[:, i].argmax()
+                        furthest_idx = doc_topic[:, i].argmin()
+                        
+                        lead_prod = df.iloc[closest_idx][p_col]
+                        dist_prod = df.iloc[furthest_idx][p_col]
+                        
+                        st.success(f"✅ **Closest:** {lead_prod}")
+                        st.error(f"❌ **Furthest:** {dist_prod}")
 
 with tab5:
     st.subheader("🚫 Exclusions")
