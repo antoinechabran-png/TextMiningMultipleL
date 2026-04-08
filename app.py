@@ -47,27 +47,32 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
         base_stops = set()
 
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
+    
+    # We allow words even if they are in stops if they are part of the gram logic (e.g., "not", "very")
+    gram_influencers = set(gram_rules['prefix_2g'] + gram_rules['suffix_2g'] + 
+                           [w for phrase in gram_rules['prefix_3g'] for w in phrase.split()] +
+                           [w for phrase in gram_rules['spec_2g'] for w in phrase.split()] +
+                           [w for phrase in gram_rules['spec_3g'] for w in phrase.split()])
+
     fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
 
-    words = re.findall(r'\b[a-zà-ÿ]{3,}\b', str(text).lower())
+    words = re.findall(r'\b[a-zà-ÿ]{2,}\b', str(text).lower())
     
-    # Pre-processing: Lemmatize and filter single words
     tokens = []
     for w in words:
         lemma = lemmatizer.lemmatize(w)
         lemma = fragrance_merges.get(lemma, lemma)
-        if (lemma not in base_stops and lemma not in custom_stops_set and len(lemma) > 2):
+        # Keep word if not a stop OR if it's a critical part of gram rules
+        if (lemma not in base_stops and lemma not in custom_stops_set) or (lemma in gram_influencers):
             tokens.append(lemma)
     
     if not tokens: return ""
 
-    # Gram Logic: Joining words with "_" based on user dictionary
     processed_tokens = []
     i = 0
     while i < len(tokens):
         match_found = False
-        
-        # Check for 3-grams first
+        # 3-grams
         if i < len(tokens) - 2:
             trigram_raw = f"{tokens[i]} {tokens[i+1]} {tokens[i+2]}"
             prefix_2g = f"{tokens[i]} {tokens[i+1]}"
@@ -75,8 +80,7 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
                 processed_tokens.append(f"{tokens[i]}_{tokens[i+1]}_{tokens[i+2]}")
                 i += 3
                 match_found = True
-        
-        # Check for 2-grams
+        # 2-grams
         if not match_found and i < len(tokens) - 1:
             bigram_raw = f"{tokens[i]} {tokens[i+1]}"
             if (bigram_raw in gram_rules['spec_2g'] or 
@@ -87,7 +91,9 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
                 match_found = True
         
         if not match_found:
-            processed_tokens.append(tokens[i])
+            # Filter out short standard words that survived the gram influencer check but aren't part of a gram
+            if tokens[i] not in base_stops or tokens[i] in gram_influencers:
+                processed_tokens.append(tokens[i])
             i += 1
             
     return " ".join(processed_tokens)
@@ -111,7 +117,6 @@ def generate_word_cloud(text_series, palette, shape):
     if shape == "Round":
         img = Image.new("L", (800, 800), 255)
         draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
-    # collocations=False because we manually joined grams with "_"
     wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
     wc.generate(combined_text)
     fig, ax = plt.subplots(); ax.imshow(wc, interpolation='bilinear'); ax.axis("off")
@@ -175,11 +180,14 @@ with st.sidebar:
         shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
         palette_opt = st.selectbox("Palette", ["copper", "GnBu", "RdPu", "viridis"])
 
-# Initialize Gram Rules in Session State
+# Initialize Gram Rules in Session State with NEW DEFAULTS
 if 'gram_rules' not in st.session_state:
     st.session_state.gram_rules = {
-        'prefix_2g': ["very", "highly"], 'suffix_2g': ["scent", "note"], 
-        'prefix_3g': ["long lasting"], 'spec_2g': ["orange blossom"], 'spec_3g': ["value for money"]
+        'prefix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "just", "quite", "many"],
+        'suffix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "quite"],
+        'prefix_3g': ["not too", "not very", "not real", "not enough"],
+        'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner"],
+        'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"]
     }
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🚫 Exclusions & Grams"])
@@ -264,9 +272,15 @@ if uploaded_file:
                     with cols[i % num_t]:
                         top_words = [fn[j] for j in topic.argsort()[-7:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        
+                        # Added Closest and Furthest logic back
                         closest_idx = doc_topic[:, i].argmax()
+                        furthest_idx = doc_topic[:, i].argmin()
                         lead_prod = df.iloc[closest_idx][p_col]
-                        st.success(f"✅ **Lead:** {lead_prod}")
+                        dist_prod = df.iloc[furthest_idx][p_col]
+                        
+                        st.success(f"✅ **Closest:** {lead_prod}")
+                        st.error(f"❌ **Furthest:** {dist_prod}")
 
 with tab5:
     st.subheader("🚫 Exclusions & Gram Lab")
@@ -297,3 +311,4 @@ with tab5:
             'spec_3g': [x.strip().lower() for x in a3.split(",") if x.strip()]
         }
         st.rerun()
+
