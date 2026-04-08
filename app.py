@@ -48,7 +48,7 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
 
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
     
-    # We allow words even if they are in stops if they are part of the gram logic (e.g., "not", "very")
+    # Identify words that are allowed to bypass standard stopword filters to form grams
     gram_influencers = set(gram_rules['prefix_2g'] + gram_rules['suffix_2g'] + 
                            [w for phrase in gram_rules['prefix_3g'] for w in phrase.split()] +
                            [w for phrase in gram_rules['spec_2g'] for w in phrase.split()] +
@@ -56,14 +56,24 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
 
     fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
 
+    # Extract words
     words = re.findall(r'\b[a-zà-ÿ]{2,}\b', str(text).lower())
     
     tokens = []
     for w in words:
         lemma = lemmatizer.lemmatize(w)
         lemma = fragrance_merges.get(lemma, lemma)
-        # Keep word if not a stop OR if it's a critical part of gram rules
-        if (lemma not in base_stops and lemma not in custom_stops_set) or (lemma in gram_influencers):
+        
+        # CRITICAL FIX: Custom exclusion list (stops) always takes priority unless authorized in a phrase later
+        if lemma in custom_stops_set:
+            # If it's a gram influencer but ALSO in the stop list, we ONLY keep it if it's a connector (like 'not', 'very')
+            # But "smell" is a content word, so if it's in custom_stops, it must go.
+            if lemma not in gram_influencers:
+                continue
+            # If it is an influencer, we keep it temporarily to allow gram formation, 
+            # but we will prune it at the end if it doesn't form a gram.
+            tokens.append(lemma)
+        elif lemma not in base_stops or lemma in gram_influencers:
             tokens.append(lemma)
     
     if not tokens: return ""
@@ -91,8 +101,8 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
                 match_found = True
         
         if not match_found:
-            # Filter out short standard words that survived the gram influencer check but aren't part of a gram
-            if tokens[i] not in base_stops or tokens[i] in gram_influencers:
+            # Final pruning: If the word is in the custom exclusion list and didn't form a gram, drop it.
+            if tokens[i] not in custom_stops_set:
                 processed_tokens.append(tokens[i])
             i += 1
             
@@ -180,7 +190,7 @@ with st.sidebar:
         shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
         palette_opt = st.selectbox("Palette", ["copper", "GnBu", "RdPu", "viridis"])
 
-# Initialize Gram Rules in Session State with NEW DEFAULTS
+# Initialize Gram Rules
 if 'gram_rules' not in st.session_state:
     st.session_state.gram_rules = {
         'prefix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "just", "quite", "many"],
@@ -272,28 +282,20 @@ if uploaded_file:
                     with cols[i % num_t]:
                         top_words = [fn[j] for j in topic.argsort()[-7:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
-                        
-                        # Added Closest and Furthest logic back
                         closest_idx = doc_topic[:, i].argmax()
                         furthest_idx = doc_topic[:, i].argmin()
-                        lead_prod = df.iloc[closest_idx][p_col]
-                        dist_prod = df.iloc[furthest_idx][p_col]
-                        
-                        st.success(f"✅ **Closest:** {lead_prod}")
-                        st.error(f"❌ **Furthest:** {dist_prod}")
+                        st.success(f"✅ **Closest:** {df.iloc[closest_idx][p_col]}")
+                        st.error(f"❌ **Furthest:** {df.iloc[furthest_idx][p_col]}")
 
 with tab5:
     st.subheader("🚫 Exclusions & Gram Lab")
-    
     col_left, col_right = st.columns(2)
-    
     with col_left:
         st.markdown("### 🛑 Word Exclusions")
         stops = st.session_state.get('custom_stop_list', [])
         txt_stops = st.text_area("Stopwords (comma separated)", value=", ".join(stops), height=150)
-    
     with col_right:
-        st.markdown("### 🔗 Gram Dictionary (Glue words with '_')")
+        st.markdown("### 🔗 Gram Dictionary")
         g = st.session_state.gram_rules
         p2 = st.text_input("Word prefix of authorized 2-gram", ", ".join(g['prefix_2g']))
         s2 = st.text_input("Word suffix of authorized 2-gram", ", ".join(g['suffix_2g']))
@@ -311,4 +313,3 @@ with tab5:
             'spec_3g': [x.strip().lower() for x in a3.split(",") if x.strip()]
         }
         st.rerun()
-
