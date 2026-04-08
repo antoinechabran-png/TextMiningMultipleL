@@ -1,5 +1,5 @@
 import streamlit as st
-import pd as pd
+import pandas as pd  # FIXED: was 'import pd as pd'
 import nltk
 from nltk.stem import WordNetLemmatizer
 import networkx as nx
@@ -223,7 +223,6 @@ if uploaded_file:
                 mtx = vec.fit_transform(df['cleaned'])
                 nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx)
                 
-                # AFFINITY CALCULATION
                 doc_topic = nmf.transform(mtx)
                 fn = vec.get_feature_names_out()
                 cols = st.columns(num_t)
@@ -233,7 +232,6 @@ if uploaded_file:
                         top_words = [fn[j] for j in topic.argsort()[-7:]]
                         st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
                         
-                        # Find closest and furthest product codes
                         closest_idx = doc_topic[:, i].argmax()
                         furthest_idx = doc_topic[:, i].argmin()
                         
