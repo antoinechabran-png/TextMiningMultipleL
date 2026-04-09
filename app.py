@@ -13,6 +13,7 @@ import re
 import numpy as np
 from PIL import Image, ImageDraw
 from textblob import TextBlob
+import io
 
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
@@ -48,7 +49,6 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
 
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
     
-    # Identify words that are allowed to bypass standard stopword filters to form grams
     gram_influencers = set(gram_rules['prefix_2g'] + gram_rules['suffix_2g'] + 
                            [w for phrase in gram_rules['prefix_3g'] for w in phrase.split()] +
                            [w for phrase in gram_rules['spec_2g'] for w in phrase.split()] +
@@ -56,7 +56,6 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
 
     fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
 
-    # Extract words
     words = re.findall(r'\b[a-zà-ÿ]{2,}\b', str(text).lower())
     
     tokens = []
@@ -64,14 +63,9 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
         lemma = lemmatizer.lemmatize(w)
         lemma = fragrance_merges.get(lemma, lemma)
         
-        # CRITICAL FIX: Custom exclusion list (stops) always takes priority unless authorized in a phrase later
         if lemma in custom_stops_set:
-            # If it's a gram influencer but ALSO in the stop list, we ONLY keep it if it's a connector (like 'not', 'very')
-            # But "smell" is a content word, so if it's in custom_stops, it must go.
             if lemma not in gram_influencers:
                 continue
-            # If it is an influencer, we keep it temporarily to allow gram formation, 
-            # but we will prune it at the end if it doesn't form a gram.
             tokens.append(lemma)
         elif lemma not in base_stops or lemma in gram_influencers:
             tokens.append(lemma)
@@ -82,7 +76,6 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
     i = 0
     while i < len(tokens):
         match_found = False
-        # 3-grams
         if i < len(tokens) - 2:
             trigram_raw = f"{tokens[i]} {tokens[i+1]} {tokens[i+2]}"
             prefix_2g = f"{tokens[i]} {tokens[i+1]}"
@@ -90,7 +83,6 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
                 processed_tokens.append(f"{tokens[i]}_{tokens[i+1]}_{tokens[i+2]}")
                 i += 3
                 match_found = True
-        # 2-grams
         if not match_found and i < len(tokens) - 1:
             bigram_raw = f"{tokens[i]} {tokens[i+1]}"
             if (bigram_raw in gram_rules['spec_2g'] or 
@@ -101,7 +93,6 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
                 match_found = True
         
         if not match_found:
-            # Final pruning: If the word is in the custom exclusion list and didn't form a gram, drop it.
             if tokens[i] not in custom_stops_set:
                 processed_tokens.append(tokens[i])
             i += 1
@@ -190,7 +181,6 @@ with st.sidebar:
         shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
         palette_opt = st.selectbox("Palette", ["copper", "GnBu", "RdPu", "viridis"])
 
-# Initialize Gram Rules
 if 'gram_rules' not in st.session_state:
     st.session_state.gram_rules = {
         'prefix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "just", "quite", "many"],
@@ -221,6 +211,34 @@ if uploaded_file:
             target_p = st.selectbox("Fragrance Focus", p_list)
             product_data = df[df[p_col].astype(str) == target_p]
             p_sub_cleaned = product_data['cleaned']
+            
+            # Export Logic
+            if not p_sub_cleaned.empty:
+                full_text = " ".join(p_sub_cleaned)
+                # Count Freq
+                cv = CountVectorizer()
+                cv_mtx = cv.fit_transform([full_text])
+                counts = dict(zip(cv.get_feature_names_out(), cv_mtx.toarray()[0]))
+                
+                # TF-IDF Freq
+                tv = TfidfVectorizer()
+                tv_mtx = tv.fit_transform([full_text])
+                tfidf = dict(zip(tv.get_feature_names_out(), tv_mtx.toarray()[0]))
+                
+                export_df = pd.DataFrame({
+                    "Word": counts.keys(),
+                    "Unweighted Frequency": counts.values(),
+                    "Weighted (TF-IDF) Frequency": [tfidf[w] for w in counts.keys()]
+                }).sort_values(by="Unweighted Frequency", ascending=False)
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    export_df.to_excel(writer, index=False, sheet_name='Word Frequencies')
+                st.download_button(label="📥 Download Word Cloud Stats (Excel)", 
+                                   data=output.getvalue(), 
+                                   file_name=f"{target_p}_word_cloud_stats.xlsx", 
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
             sent_val = product_data[v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric(f"Target Mood: {target_p}", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
             st.progress((sent_val + 1) / 2)
@@ -250,6 +268,8 @@ if uploaded_file:
             if not d_a.empty and not d_b.empty:
                 sim = float(cosine_similarity(TfidfVectorizer().fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
                 st.metric("Olfactive Similarity", f"{round(sim*100, 1)}%")
+                # Added Blue Progression Bar
+                st.progress(sim)
                 comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt))
                 comp_cols[1].pyplot(generate_word_cloud(d_b, palette_opt, shape_opt))
 
