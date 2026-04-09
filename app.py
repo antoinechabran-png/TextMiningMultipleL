@@ -161,7 +161,6 @@ with st.sidebar:
     
     if uploaded_file:
         try:
-            # --- NEW: Sheet Selector ---
             xl = pd.ExcelFile(uploaded_file)
             sheet = st.selectbox("Select Sheet:", xl.sheet_names)
             df_raw = pd.read_excel(uploaded_file, sheet_name=sheet)
@@ -199,14 +198,11 @@ if 'gram_rules' not in st.session_state:
         'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"]
     }
 
-# --- NEW: Added tab6 for Impact ---
 tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🎯 Impact Lab", "🚫 Exclusions & Grams"])
 
 if uploaded_file and 'df_raw' in locals():
     p_col = st.sidebar.selectbox("Product ID Column", df_raw.columns)
     v_col = st.sidebar.selectbox("Verbatim Column", df_raw.columns)
-    
-    # --- NEW: Preference Score Selector ---
     s_col = st.sidebar.selectbox("Preference Score (Optional)", ["None"] + list(df_raw.columns))
 
     if st.sidebar.button("🚀 Run Analysis on Sub-Target"):
@@ -308,7 +304,6 @@ if uploaded_file and 'df_raw' in locals():
                         st.success(f"✅ **Closest:** {df.iloc[closest_idx][p_col]}")
                         st.error(f"❌ **Furthest:** {df.iloc[furthest_idx][p_col]}")
 
-        # --- NEW: tab6 (Impact Lab) Logic ---
         with tab6:
             st.subheader("🎯 Preference Driver Analysis")
             pref_col = st.session_state.get('pref_col', "None")
@@ -325,8 +320,12 @@ if uploaded_file and 'df_raw' in locals():
                     impact_df = pd.DataFrame({'Word': vec_imp.get_feature_names_out(), 'Impact': model.coef_}).sort_values(by='Impact', ascending=False)
                     
                     c1, c2 = st.columns(2)
-                    with c1: st.success("**Positive Drivers**"); st.dataframe(impact_results.head(10))
-                    with c2: st.error("**Negative Drivers**"); st.dataframe(impact_results.tail(10))
+                    with c1: 
+                        st.success("**Positive Drivers**")
+                        st.dataframe(impact_df.head(10)) # Fixed variable name
+                    with c2: 
+                        st.error("**Negative Drivers**")
+                        st.dataframe(impact_df.tail(10)) # Fixed variable name
                     
                     fig, ax = plt.subplots(figsize=(10, 6))
                     top_bot = pd.concat([impact_df.head(10), impact_df.tail(10)])
