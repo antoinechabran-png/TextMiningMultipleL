@@ -6,6 +6,7 @@ python-louvain
 wordcloud
 matplotlib
 scikit-learn
-pillow
+numpy
+Pillow
 textblob
-openpyxl
+xlsxwriter
