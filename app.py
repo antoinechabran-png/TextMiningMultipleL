@@ -232,12 +232,15 @@ if uploaded_file:
                 }).sort_values(by="Unweighted Frequency", ascending=False)
                 
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    export_df.to_excel(writer, index=False, sheet_name='Word Frequencies')
-                st.download_button(label="📥 Download Word Cloud Stats (Excel)", 
-                                   data=output.getvalue(), 
-                                   file_name=f"{target_p}_word_cloud_stats.xlsx", 
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                try:
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        export_df.to_excel(writer, index=False, sheet_name='Word Frequencies')
+                    st.download_button(label="📥 Download Word Cloud Stats (Excel)", 
+                                       data=output.getvalue(), 
+                                       file_name=f"{target_p}_word_cloud_stats.xlsx", 
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except ModuleNotFoundError:
+                    st.error("❌ The 'xlsxwriter' library is not installed. Please add it to your requirements.txt.")
 
             sent_val = product_data[v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
             st.metric(f"Target Mood: {target_p}", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
