@@ -19,6 +19,17 @@ import io
 # Page Config
 st.set_page_config(page_title="Fragrance Verbatim Lab Pro", layout="wide", page_icon="🧪")
 
+# --- Multilingual Exclusion Dictionary ---
+MULTILINGUAL_STOPWORDS = {
+    "English": ["product", "smell", "feel", "really", "just", "like", "little", "think", "lot", "make", "also", "bit", "quite", "something", "seem", "evoke", "find", "remind"],
+    "French": ["produit", "odeur", "sent", "vraiment", "comme", "plus", "bien", "fait", "tout", "après", "assez", "évoque", "trouve", "rappelle", "petit", "beaucoup", "être", "avoir"],
+    "German": ["produkt", "riecht", "geruch", "wirklich", "ganz", "viel", "mehr", "oder", "etwa", "lässt", "erinnert", "finde", "bisschen", "scheint", "etwas", "gut", "immer"],
+    "Spanish": ["producto", "huele", "olor", "muy", "como", "mas", "pero", "todo", "este", "sentir", "parece", "evoca", "encuentro", "recuerda", "poco", "mucho", "bien"],
+    "Portuguese": ["producto", "cheiro", "sinto", "muito", "como", "mais", "mas", "tudo", "este", "parece", "evoca", "acho", "lembra", "pouco", "muito", "bem"],
+    "Italian": ["prodotto", "odore", "sento", "molto", "come", "più", "ma", "tutto", "questo", "sembra", "evoca", "trovo", "ricorda", "poco", "molto", "bene"],
+    "Indonesian": ["produk", "bau", "wangi", "sangat", "seperti", "lebih", "tapi", "semua", "ini", "merasa", "tampak", "mengingatkan", "sedikit", "banyak", "bagus"]
+}
+
 # --- NLP Engine ---
 @st.cache_resource
 def setup_nltk():
@@ -36,36 +47,60 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
         base_stops = set(nltk.corpus.stopwords.words(lang_map.get(lang_choice, "english")))
     except:
         base_stops = set()
-    
+
     custom_stops_set = set([str(x).strip().lower() for x in custom_stops])
-    fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
     
+    gram_influencers = set(gram_rules['prefix_2g'] + gram_rules['suffix_2g'] + 
+                           [w for phrase in gram_rules['prefix_3g'] for w in phrase.split()] +
+                           [w for phrase in gram_rules['spec_2g'] for w in phrase.split()] +
+                           [w for phrase in gram_rules['spec_3g'] for w in phrase.split()])
+
+    fragrance_merges = {"freshness": "fresh", "freshly": "fresh", "fruity": "fruit", "smelling": "smell", "scented": "scent", "floral": "flower", "flowers": "flower", "cleanliness": "clean", "cleaning": "clean"}
+
     words = re.findall(r'\b[a-zà-ÿ]{2,}\b', str(text).lower())
+    
     tokens = []
     for w in words:
         lemma = lemmatizer.lemmatize(w)
         lemma = fragrance_merges.get(lemma, lemma)
-        if lemma not in custom_stops_set and lemma not in base_stops:
+        
+        if lemma in custom_stops_set:
+            if lemma not in gram_influencers:
+                continue
             tokens.append(lemma)
-    return " ".join(tokens)
+        elif lemma not in base_stops or lemma in gram_influencers:
+            tokens.append(lemma)
+    
+    if not tokens: return ""
+
+    processed_tokens = []
+    i = 0
+    while i < len(tokens):
+        match_found = False
+        if i < len(tokens) - 2:
+            trigram_raw = f"{tokens[i]} {tokens[i+1]} {tokens[i+2]}"
+            prefix_2g = f"{tokens[i]} {tokens[i+1]}"
+            if trigram_raw in gram_rules['spec_3g'] or prefix_2g in gram_rules['prefix_3g']:
+                processed_tokens.append(f"{tokens[i]}_{tokens[i+1]}_{tokens[i+2]}")
+                i += 3
+                match_found = True
+        if not match_found and i < len(tokens) - 1:
+            bigram_raw = f"{tokens[i]} {tokens[i+1]}"
+            if (bigram_raw in gram_rules['spec_2g'] or 
+                tokens[i] in gram_rules['prefix_2g'] or 
+                tokens[i+1] in gram_rules['suffix_2g']):
+                processed_tokens.append(f"{tokens[i]}_{tokens[i+1]}")
+                i += 2
+                match_found = True
+        
+        if not match_found:
+            if tokens[i] not in custom_stops_set:
+                processed_tokens.append(tokens[i])
+            i += 1
+            
+    return " ".join(processed_tokens)
 
 # --- Analysis Functions ---
-def run_impact_analysis(df, text_col, score_col):
-    """Calculates Linear Regression coefficients for word impact on scores."""
-    vec = CountVectorizer(min_df=3, binary=True)
-    X = vec.fit_transform(df[text_col])
-    y = df[score_col]
-    
-    model = Ridge(alpha=1.0)
-    model.fit(X, y)
-    
-    impact_df = pd.DataFrame({
-        'Word': vec.get_feature_names_out(),
-        'Impact': model.coef_
-    }).sort_values(by='Impact', ascending=False)
-    
-    return impact_df
-
 def get_sentiment_words(text_series):
     words = " ".join(text_series).split()
     if not words: return [], []
@@ -120,18 +155,16 @@ def run_fca(df, p_col, fmin, use_tfidf):
     return (row_coords, col_coords, products, words, svd.explained_variance_ratio_), None
 
 # --- UI Setup ---
-MULTILINGUAL_STOPWORDS = {"English": ["product", "smell"], "French": ["produit"], "German": ["produkt"], "Spanish": ["producto"], "Portuguese": ["producto"], "Italian": ["prodotto"], "Indonesian": ["produk"]}
-
 with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
     if uploaded_file:
         try:
-            # 1. Sheet Selector
+            # --- NEW: Sheet Selector ---
             xl = pd.ExcelFile(uploaded_file)
-            sheet_name = st.selectbox("Select Sheet:", xl.sheet_names)
-            df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+            sheet = st.selectbox("Select Sheet:", xl.sheet_names)
+            df_raw = pd.read_excel(uploaded_file, sheet_name=sheet)
             
             st.subheader("🎯 Sub-Target Filter")
             filter_col = st.selectbox("Filter Column:", ["No Filter"] + list(df_raw.columns))
@@ -143,49 +176,103 @@ with st.sidebar:
                 if selected_codes:
                     target_indices = df_raw[df_raw[filter_col].isin(selected_codes)].index
                     filter_label = f"{filter_col}: {', '.join(map(str, selected_codes))}"
-            
-            st.divider()
-            # 2. Variable Mapping
-            p_col = st.selectbox("Product ID Column", df_raw.columns)
-            v_col = st.selectbox("Verbatim Column", df_raw.columns)
-            s_col = st.selectbox("Preference Score (Optional)", ["None"] + list(df_raw.columns))
-            
-        except Exception as e:
-            st.error(f"Error reading file: {e}")
+        except ImportError:
+            st.error("❌ The 'openpyxl' library is missing. Please add it to your requirements.txt file.")
             st.stop()
 
         st.divider()
         dataset_lang = st.selectbox("Language:", list(MULTILINGUAL_STOPWORDS.keys()))
+        if 'custom_stop_list' not in st.session_state:
+            st.session_state.custom_stop_list = MULTILINGUAL_STOPWORDS[dataset_lang]
+
         fmin_global = st.slider("Min Word Frequency", 1, 50, 5)
         use_tfidf = st.toggle("Use TF-IDF Weighting", value=True)
         shape_opt = st.radio("Cloud Shape", ["Rectangle", "Round"])
         palette_opt = st.selectbox("Palette", ["copper", "GnBu", "RdPu", "viridis"])
 
 if 'gram_rules' not in st.session_state:
-    st.session_state.gram_rules = {'prefix_2g': ["not"], 'suffix_2g': ["not"], 'prefix_3g': [], 'spec_2g': [], 'spec_3g': []}
+    st.session_state.gram_rules = {
+        'prefix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "just", "quite", "many"],
+        'suffix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "quite"],
+        'prefix_3g': ["not too", "not very", "not real", "not enough"],
+        'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner"],
+        'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"]
+    }
 
-tab1, tab2, tab3, tab4, tab_impact, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🎯 Impact Lab", "🚫 Exclusions"])
+# --- NEW: Added tab6 for Impact ---
+tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🎯 Impact Lab", "🚫 Exclusions & Grams"])
 
 if uploaded_file and 'df_raw' in locals():
-    if st.sidebar.button("🚀 Run Analysis"):
+    p_col = st.sidebar.selectbox("Product ID Column", df_raw.columns)
+    v_col = st.sidebar.selectbox("Verbatim Column", df_raw.columns)
+    
+    # --- NEW: Preference Score Selector ---
+    s_col = st.sidebar.selectbox("Preference Score (Optional)", ["None"] + list(df_raw.columns))
+
+    if st.sidebar.button("🚀 Run Analysis on Sub-Target"):
         df_filtered = df_raw.loc[target_indices].dropna(subset=[v_col])
-        df_filtered['cleaned'] = df_filtered[v_col].apply(lambda x: clean_text(x, st.session_state.get('custom_stop_list', []), dataset_lang, st.session_state.gram_rules))
+        df_filtered['cleaned'] = df_filtered[v_col].apply(lambda x: clean_text(x, st.session_state.custom_stop_list, dataset_lang, st.session_state.gram_rules))
         st.session_state['processed_df'] = df_filtered
         st.session_state['filter_info'] = filter_label
-        st.session_state['score_col'] = s_col
+        st.session_state['pref_col'] = s_col
 
     if 'processed_df' in st.session_state:
         df = st.session_state['processed_df']
         p_list = sorted(df[p_col].dropna().astype(str).unique())
-        
+        st.caption(f"📍 **Currently Analyzing:** {st.session_state.get('filter_info', 'Total Sample')} (N={len(df)})")
+
         with tab1:
             target_p = st.selectbox("Fragrance Focus", p_list)
             product_data = df[df[p_col].astype(str) == target_p]
-            st.pyplot(generate_word_cloud(product_data['cleaned'], palette_opt, shape_opt))
+            p_sub_cleaned = product_data['cleaned']
+            
+            if not p_sub_cleaned.empty:
+                full_text = " ".join(p_sub_cleaned)
+                cv = CountVectorizer()
+                cv_mtx = cv.fit_transform([full_text])
+                counts = dict(zip(cv.get_feature_names_out(), cv_mtx.toarray()[0]))
+                tv = TfidfVectorizer()
+                tv_mtx = tv.fit_transform([full_text])
+                tfidf = dict(zip(tv.get_feature_names_out(), tv_mtx.toarray()[0]))
+                
+                export_df = pd.DataFrame({"Word": counts.keys(),"Unweighted Frequency": counts.values(),"Weighted (TF-IDF) Frequency": [tfidf[w] for w in counts.keys()]}).sort_values(by="Unweighted Frequency", ascending=False)
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    export_df.to_excel(writer, index=False, sheet_name='Word Frequencies')
+                st.download_button(label="📥 Download Word Cloud Stats (Excel)", data=output.getvalue(), file_name=f"{target_p}_word_cloud_stats.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            sent_val = product_data[v_col].apply(lambda x: TextBlob(str(x)).sentiment.polarity).mean()
+            st.metric(f"Target Mood: {target_p}", f"{'Positive' if sent_val > 0 else 'Negative'}", f"{round(sent_val*100, 1)}%")
+            st.progress((sent_val + 1) / 2)
+            c1, c2 = st.columns(2)
+            with c1: st.pyplot(generate_word_cloud(p_sub_cleaned, palette_opt, shape_opt))
+            with c2: 
+                tree_fig = generate_word_tree(p_sub_cleaned, fmin_global, palette_opt)
+                if tree_fig: st.pyplot(tree_fig)
+                else: st.warning("Not enough patterns.")
+
+            pos_words, neg_words = get_sentiment_words(p_sub_cleaned)
+            l, r = st.columns(2)
+            with l:
+                st.success("✨ **Positive Descriptors**")
+                for w, s in pos_words: st.write(f"- {w}")
+            with r:
+                st.error("⚠️ **Negative Descriptors**")
+                for w, s in neg_words: st.write(f"- {w}")
 
         with tab2:
             st.subheader("⚔️ Scent Comparison")
-            # Comparison Logic... (Existing code works here)
+            comp_cols = st.columns(2)
+            p_a = comp_cols[0].selectbox("Fragrance A", p_list, index=0)
+            p_b = comp_cols[1].selectbox("Fragrance B", p_list, index=min(1, len(p_list)-1))
+            d_a = df[df[p_col].astype(str) == p_a]['cleaned']
+            d_b = df[df[p_col].astype(str) == p_b]['cleaned']
+            if not d_a.empty and not d_b.empty:
+                sim = float(cosine_similarity(TfidfVectorizer().fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
+                st.metric("Olfactive Similarity", f"{round(sim*100, 1)}%")
+                st.progress(sim)
+                comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt))
+                comp_cols[1].pyplot(generate_word_cloud(d_b, palette_opt, shape_opt))
 
         with tab3:
             st.subheader("🌐 Factorial Mapping")
@@ -194,42 +281,83 @@ if uploaded_file and 'df_raw' in locals():
                 r_c, c_c, prods, wrds, _ = res
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.scatter(r_c[:,0], r_c[:,1], c='blue', s=100)
-                for i, txt in enumerate(prods): ax.text(r_c[i,0], r_c[i,1], txt)
+                for i, txt in enumerate(prods): ax.text(r_c[i,0], r_c[i,1], txt, fontsize=12)
+                ax.scatter(c_c[:,0], c_c[:,1], c='red', marker='x', alpha=0.2)
+                for i, txt in enumerate(wrds):
+                    if np.linalg.norm(c_c[i]) > np.percentile([np.linalg.norm(c) for c in c_c], 80):
+                        ax.text(c_c[i,0], c_c[i,1], txt, color='darkred', fontsize=8)
                 st.pyplot(fig)
+            else: st.error(err)
 
         with tab4:
             st.subheader("🔍 Topic Lab")
-            # Topic logic... (Existing code works here)
+            num_t = st.slider("Themes", 2, 8, 3)
+            if st.button("Generate Topics"):
+                vec = TfidfVectorizer(max_features=500)
+                mtx = vec.fit_transform(df['cleaned'])
+                nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx)
+                doc_topic = nmf.transform(mtx)
+                fn = vec.get_feature_names_out()
+                cols = st.columns(num_t)
+                for i, topic in enumerate(nmf.components_):
+                    with cols[i % num_t]:
+                        top_words = [fn[j] for j in topic.argsort()[-7:]]
+                        st.info(f"**Theme {i+1}**\n\n" + ", ".join(top_words))
+                        closest_idx = doc_topic[:, i].argmax()
+                        furthest_idx = doc_topic[:, i].argmin()
+                        st.success(f"✅ **Closest:** {df.iloc[closest_idx][p_col]}")
+                        st.error(f"❌ **Furthest:** {df.iloc[furthest_idx][p_col]}")
 
-        with tab_impact:
+        # --- NEW: tab6 (Impact Lab) Logic ---
+        with tab6:
             st.subheader("🎯 Preference Driver Analysis")
-            score_col = st.session_state.get('score_col')
-            if score_col == "None" or score_col not in df.columns:
-                st.warning("Please select a numerical 'Preference Score' column in the sidebar to unlock this analysis.")
+            pref_col = st.session_state.get('pref_col', "None")
+            if pref_col == "None":
+                st.warning("Please select a Preference Score column in the sidebar to unlock this tab.")
             else:
                 try:
-                    df_impact = df.dropna(subset=[score_col, 'cleaned'])
-                    df_impact = df_impact[df_impact['cleaned'] != ""]
-                    
-                    impact_results = run_impact_analysis(df_impact, 'cleaned', score_col)
+                    df_imp = df.dropna(subset=[pref_col, 'cleaned'])
+                    df_imp = df_imp[df_imp['cleaned'] != ""]
+                    vec_imp = CountVectorizer(min_df=3, binary=True)
+                    X_imp = vec_imp.fit_transform(df_imp['cleaned'])
+                    y_imp = df_imp[pref_col]
+                    model = Ridge(alpha=1.0).fit(X_imp, y_imp)
+                    impact_df = pd.DataFrame({'Word': vec_imp.get_feature_names_out(), 'Impact': model.coef_}).sort_values(by='Impact', ascending=False)
                     
                     c1, c2 = st.columns(2)
-                    with c1:
-                        st.success("📈 **Positive Drivers** (Increases Score)")
-                        st.dataframe(impact_results.head(15), use_container_width=True)
-                    with c2:
-                        st.error("📉 **Negative Drivers** (Decreases Score)")
-                        st.dataframe(impact_results.tail(15).sort_values(by='Impact'), use_container_width=True)
+                    with c1: st.success("**Positive Drivers**"); st.dataframe(impact_results.head(10))
+                    with c2: st.error("**Negative Drivers**"); st.dataframe(impact_results.tail(10))
                     
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    top_bottom = pd.concat([impact_results.head(10), impact_results.tail(10)])
-                    colors = ['green' if x > 0 else 'red' for x in top_bottom['Impact']]
-                    ax.barh(top_bottom['Word'], top_bottom['Impact'], color=colors)
-                    ax.set_title(f"Correlation with {score_col}")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    top_bot = pd.concat([impact_df.head(10), impact_df.tail(10)])
+                    ax.barh(top_bot['Word'], top_bot['Impact'], color=['green' if x > 0 else 'red' for x in top_bot['Impact']])
                     st.pyplot(fig)
                 except Exception as e:
-                    st.error(f"Could not run impact analysis. Ensure your score column contains numbers. Error: {e}")
+                    st.error(f"Error calculating drivers: {e}")
 
 with tab5:
     st.subheader("🚫 Exclusions & Gram Lab")
-    # Exclusion UI... (Existing code works here)
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.markdown("### 🛑 Word Exclusions")
+        stops = st.session_state.get('custom_stop_list', [])
+        txt_stops = st.text_area("Stopwords (comma separated)", value=", ".join(stops), height=150)
+    with col_right:
+        st.markdown("### 🔗 Gram Dictionary")
+        g = st.session_state.gram_rules
+        p2 = st.text_input("Word prefix of authorized 2-gram", ", ".join(g['prefix_2g']))
+        s2 = st.text_input("Word suffix of authorized 2-gram", ", ".join(g['suffix_2g']))
+        p3 = st.text_input("2-gram prefix of authorized 3-gram", ", ".join(g['prefix_3g']))
+        a2 = st.text_input("Special authorization of 2-gram", ", ".join(g['spec_2g']))
+        a3 = st.text_input("Special authorization of 3-gram", ", ".join(g['spec_3g']))
+
+    if st.button("💾 Apply Rules & Re-Process"):
+        st.session_state.custom_stop_list = [x.strip().lower() for x in txt_stops.split(",") if x.strip()]
+        st.session_state.gram_rules = {
+            'prefix_2g': [x.strip().lower() for x in p2.split(",") if x.strip()],
+            'suffix_2g': [x.strip().lower() for x in s2.split(",") if x.strip()],
+            'prefix_3g': [x.strip().lower() for x in p3.split(",") if x.strip()],
+            'spec_2g': [x.strip().lower() for x in a2.split(",") if x.strip()],
+            'spec_3g': [x.strip().lower() for x in a3.split(",") if x.strip()]
+        }
+        st.rerun()
