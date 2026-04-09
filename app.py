@@ -159,17 +159,21 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     
     if uploaded_file:
-        df_raw = pd.read_excel(uploaded_file)
-        st.subheader("🎯 Sub-Target Filter")
-        filter_col = st.selectbox("Filter Column:", ["No Filter"] + list(df_raw.columns))
-        target_indices = df_raw.index
-        filter_label = "Total Sample"
-        if filter_col != "No Filter":
-            options = sorted(df_raw[filter_col].dropna().unique())
-            selected_codes = st.multiselect("Select Codes:", options)
-            if selected_codes:
-                target_indices = df_raw[df_raw[filter_col].isin(selected_codes)].index
-                filter_label = f"{filter_col}: {', '.join(map(str, selected_codes))}"
+        try:
+            df_raw = pd.read_excel(uploaded_file)
+            st.subheader("🎯 Sub-Target Filter")
+            filter_col = st.selectbox("Filter Column:", ["No Filter"] + list(df_raw.columns))
+            target_indices = df_raw.index
+            filter_label = "Total Sample"
+            if filter_col != "No Filter":
+                options = sorted(df_raw[filter_col].dropna().unique())
+                selected_codes = st.multiselect("Select Codes:", options)
+                if selected_codes:
+                    target_indices = df_raw[df_raw[filter_col].isin(selected_codes)].index
+                    filter_label = f"{filter_col}: {', '.join(map(str, selected_codes))}"
+        except ImportError:
+            st.error("❌ The 'openpyxl' library is missing. Please add it to your requirements.txt file.")
+            st.stop()
 
         st.divider()
         dataset_lang = st.selectbox("Language:", list(MULTILINGUAL_STOPWORDS.keys()))
@@ -192,7 +196,7 @@ if 'gram_rules' not in st.session_state:
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🚫 Exclusions & Grams"])
 
-if uploaded_file:
+if uploaded_file and 'df_raw' in locals():
     p_col = st.sidebar.selectbox("Product ID Column", df_raw.columns)
     v_col = st.sidebar.selectbox("Verbatim Column", df_raw.columns)
 
@@ -215,12 +219,10 @@ if uploaded_file:
             # Export Logic
             if not p_sub_cleaned.empty:
                 full_text = " ".join(p_sub_cleaned)
-                # Count Freq
                 cv = CountVectorizer()
                 cv_mtx = cv.fit_transform([full_text])
                 counts = dict(zip(cv.get_feature_names_out(), cv_mtx.toarray()[0]))
                 
-                # TF-IDF Freq
                 tv = TfidfVectorizer()
                 tv_mtx = tv.fit_transform([full_text])
                 tfidf = dict(zip(tv.get_feature_names_out(), tv_mtx.toarray()[0]))
@@ -271,7 +273,6 @@ if uploaded_file:
             if not d_a.empty and not d_b.empty:
                 sim = float(cosine_similarity(TfidfVectorizer().fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
                 st.metric("Olfactive Similarity", f"{round(sim*100, 1)}%")
-                # Added Blue Progression Bar
                 st.progress(sim)
                 comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt))
                 comp_cols[1].pyplot(generate_word_cloud(d_b, palette_opt, shape_opt))
