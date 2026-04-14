@@ -100,12 +100,23 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
             
     return " ".join(processed_tokens)
 
-# --- Analysis Functions ---
+# --- Updated Analysis Functions ---
 def get_sentiment_words(text_series):
+    """
+    Fixed to recognize underscores as spaces so TextBlob can evaluate 
+    the sentiment of 2-grams and 3-grams like 'not_fresh'.
+    """
     words = " ".join(text_series).split()
     if not words: return [], []
     unique_words = list(set(words))
-    scored = [(w, TextBlob(w.replace("_", " ")).sentiment.polarity) for w in unique_words]
+    
+    scored = []
+    for w in unique_words:
+        # Convert underscores back to spaces for the sentiment engine
+        display_text = w.replace("_", " ")
+        score = TextBlob(display_text).sentiment.polarity
+        scored.append((w, score))
+        
     pos = sorted([x for x in scored if x[1] > 0.1], key=lambda x: x[1], reverse=True)[:10]
     neg = sorted([x for x in scored if x[1] < -0.1], key=lambda x: x[1])[:10]
     return pos, neg
@@ -194,7 +205,7 @@ if 'gram_rules' not in st.session_state:
         'prefix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "just", "quite", "many"],
         'suffix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "quite"],
         'prefix_3g': ["not too", "not very", "not real", "not enough"],
-        'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner"],
+        'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner", "not fresh", "not clean"],
         'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"]
     }
 
@@ -251,10 +262,10 @@ if uploaded_file and 'df_raw' in locals():
             l, r = st.columns(2)
             with l:
                 st.success("✨ **Positive Descriptors**")
-                for w, s in pos_words: st.write(f"- {w}")
+                for w, s in pos_words: st.write(f"- {w.replace('_', ' ')}")
             with r:
                 st.error("⚠️ **Negative Descriptors**")
-                for w, s in neg_words: st.write(f"- {w}")
+                for w, s in neg_words: st.write(f"- {w.replace('_', ' ')}")
 
         with tab2:
             st.subheader("⚔️ Scent Comparison")
@@ -322,10 +333,10 @@ if uploaded_file and 'df_raw' in locals():
                     c1, c2 = st.columns(2)
                     with c1: 
                         st.success("**Positive Drivers**")
-                        st.dataframe(impact_df.head(10)) # Fixed variable name
+                        st.dataframe(impact_df.head(10))
                     with c2: 
                         st.error("**Negative Drivers**")
-                        st.dataframe(impact_df.tail(10)) # Fixed variable name
+                        st.dataframe(impact_df.tail(10))
                     
                     fig, ax = plt.subplots(figsize=(10, 6))
                     top_bot = pd.concat([impact_df.head(10), impact_df.tail(10)])
