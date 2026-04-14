@@ -118,15 +118,17 @@ def get_gram_categories(text_series, negation_prefixes, superlative_prefixes):
     neg_captured = []
     sup_captured = []
     
-    # Clean prefixes for matching
-    neg_p = [p.strip().lower().replace(" ", "_") for p in negation_prefixes]
-    sup_p = [p.strip().lower().replace(" ", "_") for p in superlative_prefixes]
+    # Convert prefix lists to underscore format for matching
+    # Sort by length descending to catch "not too" before "not"
+    neg_p = sorted([p.strip().lower().replace(" ", "_") for p in negation_prefixes], key=len, reverse=True)
+    sup_p = sorted([p.strip().lower().replace(" ", "_") for p in superlative_prefixes], key=len, reverse=True)
 
     for w in set(words):
         if "_" in w: # It's a gram
-            if any(w.startswith(p + "_") or w == p for p in neg_p):
+            # Check if word starts with any of the prefixes
+            if any(w.startswith(p + "_") for p in neg_p) or w in neg_p:
                 neg_captured.append(w.replace("_", " "))
-            elif any(w.startswith(p + "_") or w == p for p in sup_p):
+            elif any(w.startswith(p + "_") for p in sup_p) or w in sup_p:
                 sup_captured.append(w.replace("_", " "))
                 
     return sorted(list(set(neg_captured)))[:10], sorted(list(set(sup_captured)))[:10]
@@ -217,7 +219,6 @@ if 'gram_rules' not in st.session_state:
         'prefix_3g': ["not too", "not very", "not real", "not enough"],
         'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner", "not fresh", "not clean"],
         'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"],
-        # New lists for the specific descriptors requested
         'negation_list': ["not", "not too", "less", "little", "not very", "not at all"],
         'superlative_list': ["really", "very", "enough", "quite", "many", "just", "more", "real", "so", "too", "too much"]
     }
@@ -295,7 +296,6 @@ if uploaded_file and 'df_raw' in locals():
                     for g in sup_grams: st.write(f"- {g}")
                 else: st.write("No superlatives found.")
 
-        # --- Remaining tabs (Comparison, Factorial, etc.) ---
         with tab2:
             st.subheader("⚔️ Scent Comparison")
             comp_cols = st.columns(2)
@@ -382,7 +382,6 @@ with tab5:
         stops = st.session_state.get('custom_stop_list', [])
         txt_stops = st.text_area("Stopwords (comma separated)", value=", ".join(stops), height=150)
         
-        # Adding Gram Category Customization here
         st.markdown("### 📊 List Category Prefixes")
         gn_list = st.text_input("Grams Negation for Lists", ", ".join(st.session_state.gram_rules['negation_list']))
         gs_list = st.text_input("Grams Superlative for Lists", ", ".join(st.session_state.gram_rules['superlative_list']))
