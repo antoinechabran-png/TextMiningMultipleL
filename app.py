@@ -114,26 +114,19 @@ def get_sentiment_words(text_series):
     return pos, neg
 
 def get_gram_categories(text_series, negation_list, superlative_list):
-    """
-    Fixed logic: Checks if the gram (e.g. 'not_fresh') matches items in the 
-    negation or superlative lists defined in the UI.
-    """
     words = " ".join(text_series).split()
     neg_captured = []
     sup_captured = []
     
-    # Normalize list for comparison
-    neg_set = set([n.strip().lower() for n in negation_list])
-    sup_set = set([s.strip().lower() for s in superlative_list])
+    # Check for both underscore version and space version
+    neg_set = set([n.strip().lower() for n in negation_list] + [n.strip().lower().replace(" ", "_") for n in negation_list])
+    sup_set = set([s.strip().lower() for s in superlative_list] + [s.strip().lower().replace(" ", "_") for s in superlative_list])
 
     for w in set(words):
-        display_word = w.replace("_", " ")
-        # 1. Exact match (e.g. "not fresh")
-        # 2. Starts with a negation prefix (e.g. "not_clean" where "not" is in negation_list)
-        if display_word in neg_set or any(w.startswith(n.replace(" ", "_") + "_") for n in neg_set):
-            neg_captured.append(display_word)
-        elif display_word in sup_set or any(w.startswith(s.replace(" ", "_") + "_") for s in sup_set):
-            sup_captured.append(display_word)
+        if w in neg_set:
+            neg_captured.append(w.replace("_", " "))
+        elif w in sup_set:
+            sup_captured.append(w.replace("_", " "))
                 
     return sorted(list(set(neg_captured)))[:15], sorted(list(set(sup_captured)))[:15]
 
@@ -146,7 +139,9 @@ def generate_word_cloud(text_series, palette, shape):
     if shape == "Round":
         img = Image.new("L", (800, 800), 255)
         draw = ImageDraw.Draw(img); draw.ellipse((20,20,780,780), fill=0); mask = np.array(img)
-    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False)
+    
+    # CRITICAL: Added regexp=r"\S+" to ensure underscores (not_fresh) are kept together
+    wc = WordCloud(background_color="white", colormap=palette, mask=mask, width=800, height=500, collocations=False, regexp=r"\S+")
     wc.generate(combined_text)
     fig, ax = plt.subplots(); ax.imshow(wc, interpolation='bilinear'); ax.axis("off")
     return fig
@@ -155,7 +150,7 @@ def generate_word_tree(text_series, min_freq, palette):
     valid = [t for t in text_series if len(t.split()) > 1]
     if not valid: return None
     try:
-        vec = CountVectorizer(min_df=min_freq)
+        vec = CountVectorizer(min_df=min_freq, token_pattern=r"(?u)\b\w+\b")
         mtx = vec.fit_transform(valid); words = vec.get_feature_names_out()
         if len(words) < 2: return None
         adj = (mtx.T * mtx); adj.setdiag(0); G = nx.from_scipy_sparse_array(adj)
@@ -172,7 +167,7 @@ def run_fca(df, p_col, fmin, use_tfidf):
     grouped = df.groupby(p_col)['cleaned'].apply(lambda x: " ".join(x))
     if len(grouped) < 3: return None, "Need 3+ products for Factorial Mapping."
     VecClass = TfidfVectorizer if use_tfidf else CountVectorizer
-    vec = VecClass(min_df=min(fmin, len(grouped))) 
+    vec = VecClass(min_df=min(fmin, len(grouped)), token_pattern=r"(?u)\b\w+\b") 
     X = vec.fit_transform(grouped).toarray()
     words, products = vec.get_feature_names_out(), grouped.index.tolist()
     X_centered = X - np.mean(X, axis=0)
@@ -253,14 +248,21 @@ if uploaded_file and 'df_raw' in locals():
             
             if not p_sub_cleaned.empty:
                 full_text = " ".join(p_sub_cleaned)
-                cv = CountVectorizer()
+                # Fixed token pattern to include underscores
+                cv = CountVectorizer(token_pattern=r"(?u)\b\w+\b")
                 cv_mtx = cv.fit_transform([full_text])
                 counts = dict(zip(cv.get_feature_names_out(), cv_mtx.toarray()[0]))
-                tv = TfidfVectorizer()
+                
+                tv = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
                 tv_mtx = tv.fit_transform([full_text])
                 tfidf = dict(zip(tv.get_feature_names_out(), tv_mtx.toarray()[0]))
                 
-                export_df = pd.DataFrame({"Word": counts.keys(),"Unweighted Frequency": counts.values(),"Weighted (TF-IDF) Frequency": [tfidf[w] for w in counts.keys()]}).sort_values(by="Unweighted Frequency", ascending=False)
+                export_df = pd.DataFrame({
+                    "Word": counts.keys(),
+                    "Unweighted Frequency": counts.values(),
+                    "Weighted (TF-IDF) Frequency": [tfidf[w] for w in counts.keys()]
+                }).sort_values(by="Unweighted Frequency", ascending=False)
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     export_df.to_excel(writer, index=False, sheet_name='Word Frequencies')
@@ -298,7 +300,7 @@ if uploaded_file and 'df_raw' in locals():
                     for g in sup_grams: st.write(f"- {g}")
                 else: st.write("No superlatives found.")
 
-        # Tabs 2, 3, 4, 6 remain unchanged to ensure stability...
+        # Tabs 2, 3, 4, 6...
         with tab2:
             st.subheader("⚔️ Scent Comparison")
             comp_cols = st.columns(2)
@@ -307,7 +309,7 @@ if uploaded_file and 'df_raw' in locals():
             d_a = df[df[p_col].astype(str) == p_a]['cleaned']
             d_b = df[df[p_col].astype(str) == p_b]['cleaned']
             if not d_a.empty and not d_b.empty:
-                sim = float(cosine_similarity(TfidfVectorizer().fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
+                sim = float(cosine_similarity(TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit_transform([" ".join(d_a), " ".join(d_b)]))[0][1])
                 st.metric("Olfactive Similarity", f"{round(sim*100, 1)}%")
                 st.progress(sim)
                 comp_cols[0].pyplot(generate_word_cloud(d_a, palette_opt, shape_opt))
@@ -332,7 +334,7 @@ if uploaded_file and 'df_raw' in locals():
             st.subheader("🔍 Topic Lab")
             num_t = st.slider("Themes", 2, 8, 3)
             if st.button("Generate Topics"):
-                vec = TfidfVectorizer(max_features=500)
+                vec = TfidfVectorizer(max_features=500, token_pattern=r"(?u)\b\w+\b")
                 mtx = vec.fit_transform(df['cleaned'])
                 nmf = NMF(n_components=num_t, random_state=42, init='nndsvd').fit(mtx)
                 doc_topic = nmf.transform(mtx)
@@ -352,7 +354,7 @@ if uploaded_file and 'df_raw' in locals():
                 try:
                     df_imp = df.dropna(subset=[pref_col, 'cleaned'])
                     df_imp = df_imp[df_imp['cleaned'] != ""]
-                    vec_imp = CountVectorizer(min_df=3, binary=True)
+                    vec_imp = CountVectorizer(min_df=3, binary=True, token_pattern=r"(?u)\b\w+\b")
                     X_imp = vec_imp.fit_transform(df_imp['cleaned'])
                     y_imp = df_imp[pref_col]
                     model = Ridge(alpha=1.0).fit(X_imp, y_imp)
