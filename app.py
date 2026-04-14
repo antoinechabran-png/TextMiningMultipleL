@@ -100,26 +100,36 @@ def clean_text(text, custom_stops, lang_choice, gram_rules):
             
     return " ".join(processed_tokens)
 
-# --- Updated Analysis Functions ---
 def get_sentiment_words(text_series):
-    """
-    Fixed to recognize underscores as spaces so TextBlob can evaluate 
-    the sentiment of 2-grams and 3-grams like 'not_fresh'.
-    """
     words = " ".join(text_series).split()
     if not words: return [], []
     unique_words = list(set(words))
-    
     scored = []
     for w in unique_words:
-        # Convert underscores back to spaces for the sentiment engine
         display_text = w.replace("_", " ")
         score = TextBlob(display_text).sentiment.polarity
         scored.append((w, score))
-        
     pos = sorted([x for x in scored if x[1] > 0.1], key=lambda x: x[1], reverse=True)[:10]
     neg = sorted([x for x in scored if x[1] < -0.1], key=lambda x: x[1])[:10]
     return pos, neg
+
+def get_gram_categories(text_series, negation_prefixes, superlative_prefixes):
+    words = " ".join(text_series).split()
+    neg_captured = []
+    sup_captured = []
+    
+    # Clean prefixes for matching
+    neg_p = [p.strip().lower().replace(" ", "_") for p in negation_prefixes]
+    sup_p = [p.strip().lower().replace(" ", "_") for p in superlative_prefixes]
+
+    for w in set(words):
+        if "_" in w: # It's a gram
+            if any(w.startswith(p + "_") or w == p for p in neg_p):
+                neg_captured.append(w.replace("_", " "))
+            elif any(w.startswith(p + "_") or w == p for p in sup_p):
+                sup_captured.append(w.replace("_", " "))
+                
+    return sorted(list(set(neg_captured)))[:10], sorted(list(set(sup_captured)))[:10]
 
 def generate_word_cloud(text_series, palette, shape):
     combined_text = " ".join(text_series).strip()
@@ -206,7 +216,10 @@ if 'gram_rules' not in st.session_state:
         'suffix_2g': ["not", "too", "very", "real", "really", "enough", "because", "if", "less", "more", "little", "lot", "all", "so", "quite"],
         'prefix_3g': ["not too", "not very", "not real", "not enough"],
         'spec_2g': ["lily valley", "funeral flower", "white flower", "old fashion", "old people", "old lady", "house cleaner", "not fresh", "not clean"],
-        'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"]
+        'spec_3g': ["not smell good", "smell very good", "not smell bad", "smell very bad"],
+        # New lists for the specific descriptors requested
+        'negation_list': ["not", "not too", "less", "little", "not very", "not at all"],
+        'superlative_list': ["really", "very", "enough", "quite", "many", "just", "more", "real", "so", "too", "too much"]
     }
 
 tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(["📊 Single Product", "⚔️ Comparison", "🌐 Factorial Map", "🔍 Topic Lab", "🎯 Impact Lab", "🚫 Exclusions & Grams"])
@@ -258,6 +271,7 @@ if uploaded_file and 'df_raw' in locals():
                 if tree_fig: st.pyplot(tree_fig)
                 else: st.warning("Not enough patterns.")
 
+            # Row 1: Sentiments
             pos_words, neg_words = get_sentiment_words(p_sub_cleaned)
             l, r = st.columns(2)
             with l:
@@ -266,7 +280,22 @@ if uploaded_file and 'df_raw' in locals():
             with r:
                 st.error("⚠️ **Negative Descriptors**")
                 for w, s in neg_words: st.write(f"- {w.replace('_', ' ')}")
+            
+            # Row 2: Gram Categories (Negation & Superlative)
+            neg_grams, sup_grams = get_gram_categories(p_sub_cleaned, st.session_state.gram_rules['negation_list'], st.session_state.gram_rules['superlative_list'])
+            l2, r2 = st.columns(2)
+            with l2:
+                st.warning("🚫 **Negation Gram**")
+                if neg_grams:
+                    for g in neg_grams: st.write(f"- {g}")
+                else: st.write("No negations found.")
+            with r2:
+                st.info("💎 **Superlative**")
+                if sup_grams:
+                    for g in sup_grams: st.write(f"- {g}")
+                else: st.write("No superlatives found.")
 
+        # --- Remaining tabs (Comparison, Factorial, etc.) ---
         with tab2:
             st.subheader("⚔️ Scent Comparison")
             comp_cols = st.columns(2)
@@ -352,6 +381,12 @@ with tab5:
         st.markdown("### 🛑 Word Exclusions")
         stops = st.session_state.get('custom_stop_list', [])
         txt_stops = st.text_area("Stopwords (comma separated)", value=", ".join(stops), height=150)
+        
+        # Adding Gram Category Customization here
+        st.markdown("### 📊 List Category Prefixes")
+        gn_list = st.text_input("Grams Negation for Lists", ", ".join(st.session_state.gram_rules['negation_list']))
+        gs_list = st.text_input("Grams Superlative for Lists", ", ".join(st.session_state.gram_rules['superlative_list']))
+
     with col_right:
         st.markdown("### 🔗 Gram Dictionary")
         g = st.session_state.gram_rules
@@ -368,6 +403,8 @@ with tab5:
             'suffix_2g': [x.strip().lower() for x in s2.split(",") if x.strip()],
             'prefix_3g': [x.strip().lower() for x in p3.split(",") if x.strip()],
             'spec_2g': [x.strip().lower() for x in a2.split(",") if x.strip()],
-            'spec_3g': [x.strip().lower() for x in a3.split(",") if x.strip()]
+            'spec_3g': [x.strip().lower() for x in a3.split(",") if x.strip()],
+            'negation_list': [x.strip().lower() for x in gn_list.split(",") if x.strip()],
+            'superlative_list': [x.strip().lower() for x in gs_list.split(",") if x.strip()]
         }
         st.rerun()
